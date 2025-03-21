@@ -27,16 +27,21 @@ COMMAND_SCHEMA = {
         "explanation": {
             "type": "string", 
             "description": "Brief explanation of what the command does"
+        },
+        "detailed_explanation": {
+            "type": "string",
+            "description": "Detailed explanation including command options, examples, and common use cases"
         }
     },
-    "required": ["command", "explanation"],
-    "propertyOrdering": ["command", "explanation"]
+    "required": ["command", "explanation", "detailed_explanation"],
+    "propertyOrdering": ["command", "explanation", "detailed_explanation"]
 }
 
 # Define response schema with Pydantic
 class CommandResponse(BaseModel):
     command: str
     explanation: str
+    detailed_explanation: str
 
 class LLMClient:
     def __init__(self, api_key: str):
@@ -198,7 +203,18 @@ class LLMClient:
                 types.Content(
                     role="user",
                     parts=[
-                        types.Part.from_text(text=f"Convert this natural language query to a shell command and explain it:\n{natural_language}")
+                        types.Part.from_text(
+                            text=f"""Convert this natural language query to a shell command and provide two levels of explanation:
+1. A brief explanation of what the command does
+2. A detailed explanation including:
+   - All important command options and flags used
+   - What each part of the command does
+   - Common variations and use cases
+   - Any relevant examples
+   - Important notes or warnings
+
+Query: {natural_language}"""
+                        )
                     ],
                 )
             ]
@@ -238,6 +254,9 @@ class LLMClient:
                 
                 if 'explanation' not in result:
                     result['explanation'] = "No explanation available"
+                    
+                if 'detailed_explanation' not in result:
+                    result['detailed_explanation'] = "No detailed explanation available"
                 
             except (json.JSONDecodeError, ValueError) as e:
                 # Fallback for parsing errors - extract command using a simpler approach
@@ -248,14 +267,16 @@ class LLMClient:
                 
                 result = {
                     'command': command,
-                    'explanation': explanation
+                    'explanation': explanation,
+                    'detailed_explanation': "No detailed explanation available"
                 }
             
         except Exception as e:
             # Handle API errors
             result = {
                 'command': f"echo 'Error generating command: {str(e)}'",
-                'explanation': f"API Error: {str(e)}"
+                'explanation': f"API Error: {str(e)}",
+                'detailed_explanation': "No detailed explanation available"
             }
         
         # Cache the result and return

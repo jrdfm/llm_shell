@@ -35,16 +35,21 @@ COMMAND_SCHEMA = {
         },
         "explanation": {
             "type": "string", 
-            "description": "Brief explanation of the command"
+            "description": "Brief explanation of what the command does"
+        },
+        "detailed_explanation": {
+            "type": "string",
+            "description": "Detailed explanation including command options, examples, and common use cases"
         }
     },
-    "required": ["command", "explanation"],
-    "propertyOrdering": ["command", "explanation"]
+    "required": ["command", "explanation", "detailed_explanation"],
+    "propertyOrdering": ["command", "explanation", "detailed_explanation"]
 }
 
 class CommandResponse(BaseModel):
     command: str
     explanation: str
+    detailed_explanation: str
 
 class LLMShell:
     def __init__(self):
@@ -155,8 +160,10 @@ class LLMShell:
             if query.startswith('#'):
                 parts = query[1:].split()
                 verbose = '-v' in parts
+                very_verbose = '-vv' in parts
                 
-                clean_query = ' '.join([p for p in parts if p != '-v'])
+                # Clean query by removing verbosity flags
+                clean_query = ' '.join([p for p in parts if p not in ['-v', '-vv']])
                 
                 try:
                     # Get structured response from LLM
@@ -164,7 +171,11 @@ class LLMShell:
                     
                     # Ensure response is a dictionary with the proper fields
                     if not isinstance(response, dict):
-                        response = {'command': str(response), 'explanation': 'Could not get structured response'}
+                        response = {
+                            'command': str(response), 
+                            'explanation': 'Could not get structured response',
+                            'detailed_explanation': 'No detailed explanation available'
+                        }
                     
                     # Extract command from structured response
                     command = str(response.get('command', '')).strip()
@@ -173,8 +184,13 @@ class LLMShell:
                     
                     self.console.print(f"[bold bright_red]{command}[/bold bright_red]")
                     
-                    # Show explanation if verbose mode is enabled
-                    if verbose and 'explanation' in response and response['explanation']:
+                    # Show explanation based on verbosity level
+                    if very_verbose and 'detailed_explanation' in response:
+                        self.console.print(f"[bold green]Detailed Explanation:[/bold green]")
+                        detailed = str(response.get('detailed_explanation', '')).strip()
+                        for line in detailed.split('\n'):
+                            self.console.print(f"[green_yellow]{line.strip()}[/green_yellow]")
+                    elif verbose and 'explanation' in response:
                         self.console.print(f"[bold green]Explanation:[/bold green]")
                         explanation = str(response.get('explanation', '')).strip()
                         for line in explanation.split('\n'):
@@ -214,11 +230,22 @@ class LLMShell:
     
     async def run(self):
         """Run the interactive shell."""
+        # ASCII Art welcome banner
+        self.console.print("""[bold cyan]
+    ╔══════════════════════════════════════╗
+    ║  ┌─┐┬ ┬┌─┐┬  ┬    ╔═╗╔═╗╔═╗╦╔═╗╔╦╗ ║
+    ║  └─┐├─┤├┤ │  │    ╠═╣╚═╗╚═╗║╚═╗ ║  ║
+    ║  └─┘┴ ┴└─┘┴─┘┴─┘  ╩ ╩╚═╝╚═╝╩╚═╝ ╩  ║
+    ║                                      ║
+    ║     Your AI-Powered Shell Helper     ║
+    ╚══════════════════════════════════════╝[/bold cyan]
+""")
         self.console.print("[bold]Welcome to LLM Shell Assistant![/bold]")
         self.console.print("Type 'exit' or press Ctrl+D to exit.")
         self.console.print("Start your query with # to use natural language")
-        self.console.print("Add -v for verbose output")
-        self.console.print("Example: #how do I copy files with scp -v\n")
+        self.console.print("Add -v for brief explanation")
+        self.console.print("Add -vv for detailed explanation")
+        self.console.print("Example: #how do I copy files with scp -vv\n")
         
         while True:
             try:
