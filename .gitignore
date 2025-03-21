@@ -1,0 +1,6 @@
+/build
+/venv
+.env
+.vscode/
+__pycache__/
+*.so
