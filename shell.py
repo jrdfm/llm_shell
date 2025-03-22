@@ -207,8 +207,56 @@ class LLMShell:
                         self.console.print(f"[bold green]Detailed Explanation:[/bold green]")
                         detailed = str(response.get('detailed_explanation', '')).strip()
                         if detailed:
+                            # Preserve structure while cleaning up markdown
+                            formatted = []
+                            current_indent = 0
+                            in_list = False
+                            
                             for line in detailed.split('\n'):
-                                self.console.print(f"[green_yellow]{line.strip()}[/green_yellow]")
+                                # Clean line and detect structure
+                                clean_line = line.replace('**', '').replace('`', '').strip()
+                                
+                                # Detect section headers
+                                if clean_line.endswith(':'):
+                                    formatted.append(f"\n[bold]{clean_line}[/bold]")
+                                    in_list = False
+                                # Detect main bullet points
+                                elif clean_line.startswith('* ') or clean_line.startswith('- '):
+                                    formatted.append(f"  • {clean_line[2:]}")
+                                    current_indent = 2
+                                    in_list = True
+                                # Detect sub-points
+                                elif clean_line.startswith('  * ') or clean_line.startswith('  - '):
+                                    formatted.append(f"    ◦ {clean_line[4:]}")
+                                    current_indent = 4
+                                    in_list = True
+                                # Handle continuation lines
+                                elif in_list and clean_line:
+                                    formatted.append(f"{' ' * current_indent}{clean_line}")
+                                # Handle regular paragraphs
+                                else:
+                                    if formatted and not formatted[-1].endswith('\n'):
+                                        formatted.append('\n')
+                                    formatted.append(textwrap.fill(
+                                        clean_line,
+                                        width=80,
+                                        initial_indent='  ',
+                                        subsequent_indent='    '
+                                    ))
+                            
+                            # Print formatted lines
+                            for line in '\n'.join(formatted).split('\n'):
+                                if line.startswith('[bold cyan]'):
+                                    self.console.print(
+                                        line,
+                                        style="green_yellow",
+                                        end=""
+                                    )
+                                else:
+                                    self.console.print(
+                                        f"[green_yellow]{line}[/green_yellow]",
+                                        highlight=False
+                                    )
                     elif verbose and 'explanation' in response:
                         self.console.print(f"[bold green]Explanation:[/bold green]")
                         explanation = str(response.get('explanation', '')).strip()
