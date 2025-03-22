@@ -66,22 +66,58 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 ### Error Handling
 
-The shell provides intelligent error handling:
-- When a command fails, the error message is displayed immediately
-- An AI-powered explanation of the problem follows
-- Practical solutions are suggested with bullet points
-- Errors are captured directly from command execution without re-running commands
+The shell provides intelligent error handling with AI-powered explanations:
 
-Example:
+1. **Direct Error Capture**
+   - Errors are captured directly from command execution in the C core
+   - No re-running of commands to capture errors
+   - Handles both execution errors and usage messages
+
+2. **Error Processing**
+   - Errors are immediately displayed with a red "Error:" prefix
+   - The LLM analyzes the error using the Gemini model
+   - Responses are cached to improve performance
+
+3. **Structured Solutions**
+   The error handler provides a consistent format:
+   ```bash
+   Error: <original error message>
+
+   Problem: <one-line explanation of what went wrong>
+
+   Solution:
+     • <step-by-step instructions>
+     • <clear actionable items>
+     • <relevant suggestions>
+   ```
+
+Example outputs:
+
 ```bash
 $ mkdir root/pass
 Error: mkdir: cannot create directory 'root/pass': No such file or directory
 
-Problem: The parent directory 'root' doesn't exist
+Problem: The parent directory 'root' does not exist
 
 Solution:
-  • Create the parent directory first: mkdir -p root/pass
-  • Or navigate to the correct location before running mkdir
+  • First, create the parent directory 'root' using the command `mkdir root`
+  • Verify that the 'root' directory was created successfully using `ls -l`
+  • Then, create the 'pass' directory inside 'root' using `mkdir root/pass`
+```
+
+```bash
+$ scp ssh
+Error: usage: scp [-346ABCOpqRrsTv] [-c cipher] [-D sftp_server_path] [-F ssh_config]
+           [-i identity_file] [-J destination] [-l limit] [-o ssh_option]
+           [-P port] [-S program] [-X sftp_option] source ... target
+
+Problem: The scp command was invoked with incorrect arguments
+
+Solution:
+  • Review the scp command syntax: scp [options] source target
+  • Specify a source file/directory to copy from
+  • Specify a destination where you want to copy to
+  • Add any needed options like -r for directories
 ```
 
 ## Technical Implementation
