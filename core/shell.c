@@ -37,17 +37,43 @@ ShellContext* shell_init(void) {
     return ctx;
 }
 
-// Parse command into arguments
+// Parse command into arguments with quote handling
 static char** parse_command(const char *command, int *argc) {
     char **argv = malloc(sizeof(char*) * MAX_ARGS);
     char *cmd = strdup(command);
-    char *token = strtok(cmd, " \t\n");
     int i = 0;
+    char *p = cmd;
+    int in_quotes = 0;
+    char quote_char = 0;
+    char *start = p;
     
-    while (token && i < MAX_ARGS - 1) {
-        argv[i++] = strdup(token);
-        token = strtok(NULL, " \t\n");
+    while (*p && i < MAX_ARGS - 1) {
+        if (*p == '"' || *p == '\'') {
+            if (!in_quotes) {
+                quote_char = *p;
+                in_quotes = 1;
+                start = p + 1;
+            } else if (*p == quote_char) {
+                in_quotes = 0;
+                *p = '\0';
+                argv[i++] = strdup(start);
+                start = p + 1;
+            }
+        } else if ((*p == ' ' || *p == '\t' || *p == '\n') && !in_quotes) {
+            if (p > start) {
+                *p = '\0';
+                argv[i++] = strdup(start);
+            }
+            start = p + 1;
+        }
+        p++;
     }
+    
+    // Handle last argument
+    if (p > start && i < MAX_ARGS - 1) {
+        argv[i++] = strdup(start);
+    }
+    
     argv[i] = NULL;
     *argc = i;
     
