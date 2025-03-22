@@ -8,12 +8,10 @@ class ErrorHandler:
 
     async def handle_error(self, error_msg: str) -> None:
         """Handle and display errors with explanations."""
+        # Always show error message first
         self.console.print(f"[bold red]Error:[/bold red] {error_msg}")
-        explanation = await self.llm_client.explain_error(error_msg)
-        self._print_error_solution(explanation)
-
-    async def handle_error_with_solution(self, error_msg: str) -> None:
-        """Handle errors but only show the solution since error is already displayed."""
+        
+        # Then get and show the solution
         explanation = await self.llm_client.explain_error(error_msg)
         self._print_error_solution(explanation)
 

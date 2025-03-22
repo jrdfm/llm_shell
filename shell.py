@@ -73,18 +73,19 @@ class LLMShell:
     async def execute_shell_command(self, command: str):
         """Execute a shell command using the C core."""
         try:
-            # First execute through C core (this will display output/errors)
+            # Execute through C core and get result and error if any
             result = self.core_shell.execute(command)
+            if isinstance(result, tuple):
+                exit_code, error_msg = result
+            else:
+                exit_code, error_msg = result, None
             
-            # If command failed, run it again to capture error for explanation
-            if result != 0:
-                # Use subprocess to capture the error output
-                process = subprocess.run(command, shell=True, capture_output=True, text=True)
-                error_msg = process.stderr.strip() or process.stdout.strip()
-                if error_msg:
-                    # Get explanation and solution
-                    await self.error_handler.handle_error_with_solution(error_msg)
-            return result == 0
+            # Handle any error message or non-zero exit code
+            if (error_msg and error_msg.strip()) or exit_code != 0:
+                # Get explanation and solution
+                error_text = error_msg.strip() if error_msg else f"Command failed with exit code {exit_code}"
+                await self.error_handler.handle_error(error_text)
+            return exit_code == 0
         except Exception as e:
             await self.error_handler.handle_error(str(e))
             return False
@@ -92,19 +93,19 @@ class LLMShell:
     async def execute_pipeline(self, commands):
         """Execute a pipeline of commands using the C core."""
         try:
-            # First execute through C core (this will display output/errors)
+            # Execute through C core and get result and error if any
             result = self.core_shell.execute_pipeline(commands)
+            if isinstance(result, tuple):
+                exit_code, error_msg = result
+            else:
+                exit_code, error_msg = result, None
             
-            # If pipeline failed, run it again to capture error for explanation
-            if result != 0:
-                # Use subprocess to capture the error output
-                pipeline = " | ".join(commands)
-                process = subprocess.run(pipeline, shell=True, capture_output=True, text=True)
-                error_msg = process.stderr.strip() or process.stdout.strip()
-                if error_msg:
-                    # Get explanation and solution
-                    await self.error_handler.handle_error_with_solution(error_msg)
-            return result == 0
+            # Handle any error message or non-zero exit code
+            if (error_msg and error_msg.strip()) or exit_code != 0:
+                # Get explanation and solution
+                error_text = error_msg.strip() if error_msg else f"Pipeline failed with exit code {exit_code}"
+                await self.error_handler.handle_error(error_text)
+            return exit_code == 0
         except Exception as e:
             await self.error_handler.handle_error(str(e))
             return False

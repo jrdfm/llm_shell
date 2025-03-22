@@ -65,8 +65,16 @@ Shell_execute(ShellObject *self, PyObject *args)
 
     // Call our C implementation
     int result = shell_execute(self->ctx, command);
-    // Convert C int result to Python integer object
-    return PyLong_FromLong(result);
+    
+    // Get error message if command failed
+    const char *error = shell_get_error(self->ctx);
+    if (result != 0 && error != NULL) {
+        // Return tuple (exit_code, error_message)
+        return Py_BuildValue("(is)", result, error);
+    }
+    
+    // Return just exit code if no error
+    return Py_BuildValue("(iO)", result, Py_None);
 }
 
 /*
@@ -108,8 +116,15 @@ Shell_execute_pipeline(ShellObject *self, PyObject *args)
     int result = shell_execute_pipeline(self->ctx, commands, num_commands);
     free(commands);
 
-    // Return result as Python integer
-    return PyLong_FromLong(result);
+    // Get error message if pipeline failed
+    const char *error = shell_get_error(self->ctx);
+    if (result != 0 && error != NULL) {
+        // Return tuple (exit_code, error_message)
+        return Py_BuildValue("(is)", result, error);
+    }
+    
+    // Return just exit code if no error
+    return Py_BuildValue("(iO)", result, Py_None);
 }
 
 /*

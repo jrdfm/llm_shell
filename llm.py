@@ -154,10 +154,18 @@ class LLMClient:
         contents = [
             types.Content(
                 role="user",
-                parts=[{"text": "Explain this shell error in two parts:\n" +
-                       "1. Problem (one line)\n" +
-                       "2. Solution (3-4 steps, use bullet points with - not numbers)\n" +
-                       "DO NOT USE NUMBERED LISTS IN THE SOLUTION\n\n" +
+                parts=[{"text": "You are a shell error explainer. Given a shell error, explain it in a structured format.\n" +
+                       "ALWAYS return a JSON object with this exact structure:\n" +
+                       "{\n" +
+                       '  "problem": "One line explanation of what went wrong",\n' +
+                       '  "solution": ["Step 1 to fix", "Step 2 to fix", "Step 3 to fix"]\n' +
+                       "}\n\n" +
+                       "Rules:\n" +
+                       "1. problem must be a single line\n" +
+                       "2. solution must be an array of 2-4 steps\n" +
+                       "3. steps should be clear and actionable\n" +
+                       "4. no numbered lists in steps\n" +
+                       "5. MUST return valid JSON\n\n" +
                        f"Error: {error_message}"}]
             )
         ]

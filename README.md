@@ -5,7 +5,7 @@ An intelligent shell that combines traditional shell capabilities with natural l
 ## Prerequisites
 
 - Python 3.8 or higher
-- A Google API key for Gemini AI
+- A Google API key for Gemini AI (specifically configured for gemini-2.0-flash model)
 - GCC compiler (for the C core)
 
 ## Setup
@@ -63,6 +63,26 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
   ```bash
   #how do I copy files with scp -vv
   ```
+
+### Error Handling
+
+The shell provides intelligent error handling:
+- When a command fails, the error message is displayed immediately
+- An AI-powered explanation of the problem follows
+- Practical solutions are suggested with bullet points
+- Errors are captured directly from command execution without re-running commands
+
+Example:
+```bash
+$ mkdir root/pass
+Error: mkdir: cannot create directory 'root/pass': No such file or directory
+
+Problem: The parent directory 'root' doesn't exist
+
+Solution:
+  • Create the parent directory first: mkdir -p root/pass
+  • Or navigate to the correct location before running mkdir
+```
 
 ## Technical Implementation
 

@@ -135,7 +135,10 @@ int shell_execute(ShellContext *ctx, const char *command) {
         // If execvp fails, write error to pipe
         char error_msg[MAX_ERROR_LEN];
         snprintf(error_msg, sizeof(error_msg), "%s: %s", argv[0], strerror(errno));
-        write(STDERR_FILENO, error_msg, strlen(error_msg));
+        ssize_t bytes_written = write(STDERR_FILENO, error_msg, strlen(error_msg));
+        if (bytes_written < 0) {
+            snprintf(error_msg, sizeof(error_msg), "Failed to write error message: %s", strerror(errno));
+        }
         _exit(127);
     } else {
         // Parent process
