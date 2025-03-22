@@ -169,10 +169,28 @@ class LLMShell:
                     # Get structured response from LLM
                     response = await self.llm_client.generate_command(clean_query)
                     
+                    # Handle string responses (error cases)
+                    if isinstance(response, str):
+                        if response.startswith('{'):
+                            try:
+                                response = json.loads(response)
+                            except json.JSONDecodeError:
+                                response = {
+                                    'command': str(response),
+                                    'explanation': 'Could not parse response',
+                                    'detailed_explanation': 'No detailed explanation available'
+                                }
+                        else:
+                            response = {
+                                'command': str(response),
+                                'explanation': 'Could not get structured response',
+                                'detailed_explanation': 'No detailed explanation available'
+                            }
+                    
                     # Ensure response is a dictionary with the proper fields
                     if not isinstance(response, dict):
                         response = {
-                            'command': str(response), 
+                            'command': str(response),
                             'explanation': 'Could not get structured response',
                             'detailed_explanation': 'No detailed explanation available'
                         }
@@ -188,13 +206,15 @@ class LLMShell:
                     if very_verbose and 'detailed_explanation' in response:
                         self.console.print(f"[bold green]Detailed Explanation:[/bold green]")
                         detailed = str(response.get('detailed_explanation', '')).strip()
-                        for line in detailed.split('\n'):
-                            self.console.print(f"[green_yellow]{line.strip()}[/green_yellow]")
+                        if detailed:
+                            for line in detailed.split('\n'):
+                                self.console.print(f"[green_yellow]{line.strip()}[/green_yellow]")
                     elif verbose and 'explanation' in response:
                         self.console.print(f"[bold green]Explanation:[/bold green]")
                         explanation = str(response.get('explanation', '')).strip()
-                        for line in explanation.split('\n'):
-                            self.console.print(f"[green_yellow]{line.strip()}[/green_yellow]")
+                        if explanation:
+                            for line in explanation.split('\n'):
+                                self.console.print(f"[green_yellow]{line.strip()}[/green_yellow]")
                     
                     return
                 

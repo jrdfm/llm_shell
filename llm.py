@@ -30,7 +30,7 @@ COMMAND_SCHEMA = {
         },
         "detailed_explanation": {
             "type": "string",
-            "description": "Detailed explanation including command options, examples, and common use cases"
+            "description": "Detailed explanation including a very brief explanation of the command options, examples, and common use cases"
         }
     },
     "required": ["command", "explanation", "detailed_explanation"],
@@ -235,15 +235,27 @@ Query: {natural_language}"""
             # Parse the JSON response
             try:
                 # Handle possible code block formatting in response
-                response_text = response.text
-                if '```json' in response_text:
-                    json_str = response_text.split('```json')[1].split('```')[0].strip()
-                elif '```' in response_text:
-                    json_str = response_text.split('```')[1].strip()
-                else:
-                    json_str = response_text
+                response_text = response.text.strip()
                 
-                result = json.loads(json_str)
+                # Try to parse as JSON first
+                try:
+                    result = json.loads(response_text)
+                except json.JSONDecodeError:
+                    # If direct JSON parsing fails, try to extract from code blocks
+                    if '```json' in response_text:
+                        json_str = response_text.split('```json')[1].split('```')[0].strip()
+                    elif '```' in response_text:
+                        json_str = response_text.split('```')[1].strip()
+                    else:
+                        # Try to find JSON object in the text
+                        start = response_text.find('{')
+                        end = response_text.rfind('}') + 1
+                        if start >= 0 and end > start:
+                            json_str = response_text[start:end]
+                        else:
+                            raise ValueError("Could not find JSON in response")
+                    
+                    result = json.loads(json_str)
                 
                 # Ensure we have the required fields
                 if not isinstance(result, dict):
@@ -257,6 +269,11 @@ Query: {natural_language}"""
                     
                 if 'detailed_explanation' not in result:
                     result['detailed_explanation'] = "No detailed explanation available"
+                
+                # Clean up the response
+                result['command'] = result['command'].strip()
+                result['explanation'] = result['explanation'].strip()
+                result['detailed_explanation'] = result['detailed_explanation'].strip()
                 
             except (json.JSONDecodeError, ValueError) as e:
                 # Fallback for parsing errors - extract command using a simpler approach
