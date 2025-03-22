@@ -11,6 +11,7 @@
 
 #define MAX_ARGS 256
 #define MAX_ENV 1024
+#define MAX_ERROR_LEN 4096
 
 // Initialize shell context
 ShellContext* shell_init(void) {
@@ -33,6 +34,7 @@ ShellContext* shell_init(void) {
     
     ctx->last_exit_code = 0;
     ctx->interactive = isatty(STDIN_FILENO);
+    ctx->last_error = NULL;
     
     return ctx;
 }
@@ -87,26 +89,73 @@ int shell_execute(ShellContext *ctx, const char *command) {
     char **argv = parse_command(command, &argc);
     if (!argv || argc == 0) return -1;
 
+    // Free previous error if any
+    if (ctx->last_error) {
+        free(ctx->last_error);
+        ctx->last_error = NULL;
+    }
+
     // Handle built-in cd
     if (strcmp(argv[0], "cd") == 0) {
         int ret = shell_cd(ctx, argc > 1 ? argv[1] : getenv("HOME"));
+        if (ret != 0) {
+            const char *err = strerror(errno);
+            ctx->last_error = strdup(err);
+        }
         for (int i = 0; argv[i]; i++) free(argv[i]);
         free(argv);
         return ret;
     }
 
+    // Create pipe for error output
+    int error_pipe[2];
+    if (pipe(error_pipe) == -1) {
+        for (int i = 0; argv[i]; i++) free(argv[i]);
+        free(argv);
+        return -1;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
+        close(error_pipe[0]);
+        close(error_pipe[1]);
+        for (int i = 0; argv[i]; i++) free(argv[i]);
+        free(argv);
         return -1;
     } else if (pid == 0) {
         // Child process
+        close(error_pipe[0]);  // Close read end
+        
+        // Redirect stderr to pipe
+        dup2(error_pipe[1], STDERR_FILENO);
+        close(error_pipe[1]);  // Close original write end
+        
         execvp(argv[0], argv);
-        _exit(127);  // Command not found
+        
+        // If execvp fails, write error to pipe
+        char error_msg[MAX_ERROR_LEN];
+        snprintf(error_msg, sizeof(error_msg), "%s: %s", argv[0], strerror(errno));
+        write(STDERR_FILENO, error_msg, strlen(error_msg));
+        _exit(127);
     } else {
         // Parent process
+        close(error_pipe[1]);  // Close write end
+        
+        // Read error output
+        char error_buffer[MAX_ERROR_LEN] = {0};
+        ssize_t bytes_read = read(error_pipe[0], error_buffer, sizeof(error_buffer) - 1);
+        close(error_pipe[0]);  // Close read end
+        
+        // Wait for child
         int status;
         waitpid(pid, &status, 0);
         ctx->last_exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        
+        // Store error if any
+        if (bytes_read > 0) {
+            error_buffer[bytes_read] = '\0';  // Ensure null termination
+            ctx->last_error = strdup(error_buffer);
+        }
         
         // Clean up
         for (int i = 0; argv[i]; i++) free(argv[i]);
@@ -234,16 +283,24 @@ int shell_setenv(ShellContext *ctx, const char *name, const char *value) {
     return 0;
 }
 
+// Get last error message
+const char* shell_get_error(ShellContext *ctx) {
+    return ctx->last_error;
+}
+
 // Clean up shell context
 void shell_cleanup(ShellContext *ctx) {
     if (!ctx) return;
     
-    free(ctx->cwd);
+    if (ctx->cwd) free(ctx->cwd);
+    if (ctx->last_error) free(ctx->last_error);
     
-    for (int i = 0; ctx->env[i]; i++) {
-        free(ctx->env[i]);
+    if (ctx->env) {
+        for (int i = 0; ctx->env[i]; i++) {
+            free(ctx->env[i]);
+        }
+        free(ctx->env);
     }
-    free(ctx->env);
     
     free(ctx);
 } 

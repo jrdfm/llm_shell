@@ -9,6 +9,7 @@ typedef struct {
     char **env;            // Environment variables
     int last_exit_code;    // Last command's exit code
     bool interactive;      // Whether shell is interactive
+    char *last_error;     // Last error message
 } ShellContext;
 
 // Initialize shell context
@@ -28,6 +29,9 @@ const char* shell_getenv(ShellContext *ctx, const char *name);
 
 // Set environment variable
 int shell_setenv(ShellContext *ctx, const char *name, const char *value);
+
+// Get last error message
+const char* shell_get_error(ShellContext *ctx);
 
 // Clean up shell context
 void shell_cleanup(ShellContext *ctx);

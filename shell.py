@@ -14,42 +14,19 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.formatted_text import HTML
 from rich.console import Console
 from rich.traceback import install
-import textwrap
 import json
-from pydantic import BaseModel
-from google import genai
+import subprocess
 
-from core import Shell  # Import our C core implementation
+from core import Shell
 from llm import LLMClient
 from completions import ShellCompleter
+from formatters import ResponseFormatter
+from error_handler import ErrorHandler
+from models import COMMAND_SCHEMA, CommandResponse
+from ui import ShellUI
 
 # Install rich traceback handler
 install()
-
-COMMAND_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "command": {
-            "type": "string",
-            "description": "The shell command to execute"
-        },
-        "explanation": {
-            "type": "string", 
-            "description": "Brief explanation of what the command does"
-        },
-        "detailed_explanation": {
-            "type": "string",
-            "description": "Detailed explanation including command options, examples, and common use cases"
-        }
-    },
-    "required": ["command", "explanation", "detailed_explanation"],
-    "propertyOrdering": ["command", "explanation", "detailed_explanation"]
-}
-
-class CommandResponse(BaseModel):
-    command: str
-    explanation: str
-    detailed_explanation: str
 
 class LLMShell:
     def __init__(self):
@@ -67,11 +44,14 @@ class LLMShell:
             enable_history_search=True,
         )
         
-        # Initialize our C core shell
+        # Initialize components
         self.core_shell = Shell()
         self._llm_client = None
+        self.formatter = ResponseFormatter(self.console)
+        self.error_handler = ErrorHandler(self.console, self.llm_client)
+        self.ui = ShellUI(self.console)
         
-        # Clear the cache on startup to ensure we're using the correct model
+        # Clear the cache on startup
         if self.llm_client:
             self.llm_client.clear_cache()
     
@@ -87,66 +67,89 @@ class LLMShell:
     
     def get_prompt(self):
         """Generate the shell prompt."""
-        cwd = self.core_shell.get_cwd()  # Use C core to get current directory
+        cwd = self.core_shell.get_cwd()
         return HTML(f'<ansigreen>{self.username}@{self.hostname}</ansigreen>:<ansiblue>{cwd}</ansiblue>$ ')
     
     async def execute_shell_command(self, command: str):
         """Execute a shell command using the C core."""
         try:
-            # Use C core for command execution
+            # First execute through C core (this will display output/errors)
             result = self.core_shell.execute(command)
-            if result != 0:  # Command failed
-                # Get the error output from stderr
-                error_msg = os.popen(f"{command} 2>&1").read().strip()
+            
+            # If command failed, run it again to capture error for explanation
+            if result != 0:
+                # Use subprocess to capture the error output
+                process = subprocess.run(command, shell=True, capture_output=True, text=True)
+                error_msg = process.stderr.strip() or process.stdout.strip()
                 if error_msg:
-                    explanation = await self.llm_client.explain_error(error_msg)
-                    parts = explanation.split('\n', 1)
-                    if len(parts) > 1:
-                        # Clean up any accidental numbering
-                        solution = parts[1].replace("2. ", "").replace("- ", "• ").strip()
-                        self.console.print("\n[bold magenta]How to fix:[/bold magenta]")
-                        self.console.print(f"[bright_yellow]{solution}[/bright_yellow]")
-                    else:
-                        self.console.print(f"[bright_yellow]{parts[0]}[/bright_yellow]")
+                    # Get explanation and solution
+                    await self.error_handler.handle_error_with_solution(error_msg)
             return result == 0
         except Exception as e:
-            error_msg = str(e)
-            explanation = await self.llm_client.explain_error(error_msg)
-            parts = explanation.split('\n', 1)
-            if len(parts) > 1:
-                # Clean up any accidental numbering
-                solution = parts[1].replace("2. ", "").replace("- ", "• ").strip()
-                self.console.print(f"[green]Solution:[/green] {solution}")
+            await self.error_handler.handle_error(str(e))
             return False
     
     async def execute_pipeline(self, commands):
         """Execute a pipeline of commands using the C core."""
         try:
+            # First execute through C core (this will display output/errors)
             result = self.core_shell.execute_pipeline(commands)
-            if result != 0:  # Pipeline failed
-                # Get the error output from stderr
-                cmd = " | ".join(commands)
-                error_msg = os.popen(f"{cmd} 2>&1").read().strip()
+            
+            # If pipeline failed, run it again to capture error for explanation
+            if result != 0:
+                # Use subprocess to capture the error output
+                pipeline = " | ".join(commands)
+                process = subprocess.run(pipeline, shell=True, capture_output=True, text=True)
+                error_msg = process.stderr.strip() or process.stdout.strip()
                 if error_msg:
-                    explanation = await self.llm_client.explain_error(error_msg)
-                    parts = explanation.split('\n', 1)
-                    if len(parts) > 1:
-                        # Clean up any accidental numbering
-                        solution = parts[1].replace("2. ", "").replace("- ", "• ").strip()
-                        self.console.print("\n[bold magenta]How to fix:[/bold magenta]")
-                        self.console.print(f"[bright_yellow]{solution}[/bright_yellow]")
-                    else:
-                        self.console.print(f"[bright_yellow]{parts[0]}[/bright_yellow]")
+                    # Get explanation and solution
+                    await self.error_handler.handle_error_with_solution(error_msg)
             return result == 0
         except Exception as e:
-            error_msg = str(e)
-            explanation = await self.llm_client.explain_error(error_msg)
-            parts = explanation.split('\n', 1)
-            if len(parts) > 1:
-                # Clean up any accidental numbering
-                solution = parts[1].replace("2. ", "").replace("- ", "• ").strip()
-                self.console.print(f"[green]Solution:[/green] {solution}")
+            await self.error_handler.handle_error(str(e))
             return False
+    
+    async def handle_natural_language_query(self, query: str, verbose: bool, very_verbose: bool):
+        """Handle natural language query processing."""
+        try:
+            response = await self.llm_client.generate_command(query)
+            
+            # Handle string responses
+            if isinstance(response, str):
+                response = self._parse_string_response(response, query)
+            
+            # Ensure response is a dictionary
+            if not isinstance(response, dict):
+                response = {
+                    'command': str(response),
+                    'explanation': 'Could not get structured response',
+                    'detailed_explanation': 'No detailed explanation available'
+                }
+            
+            # Display command and explanations
+            command = str(response.get('command', '')).strip() or f"echo 'Could not generate command for: {query}'"
+            self.console.print(f"[bold bright_red]{command}[/bold bright_red]")
+            
+            if very_verbose and 'detailed_explanation' in response:
+                self.formatter.format_detailed_explanation(response.get('detailed_explanation', ''))
+            elif verbose and 'explanation' in response:
+                self.formatter.format_brief_explanation(response.get('explanation', ''))
+            
+        except Exception as e:
+            await self.error_handler.handle_error(e)
+    
+    def _parse_string_response(self, response: str, query: str) -> dict:
+        """Parse string response into structured format."""
+        if response.startswith('{'):
+            try:
+                return json.loads(response)
+            except json.JSONDecodeError:
+                pass
+        return {
+            'command': str(response),
+            'explanation': 'Could not parse response',
+            'detailed_explanation': 'No detailed explanation available'
+        }
     
     async def handle_command(self, query: str):
         """Process and execute a shell command."""
@@ -156,131 +159,19 @@ class LLMShell:
         try:
             query = query.strip()
             
-            # Check if this is a natural language query (starts with #)
             if query.startswith('#'):
                 parts = query[1:].split()
                 verbose = '-v' in parts
                 very_verbose = '-vv' in parts
-                
-                # Clean query by removing verbosity flags
                 clean_query = ' '.join([p for p in parts if p not in ['-v', '-vv']])
-                
-                try:
-                    # Get structured response from LLM
-                    response = await self.llm_client.generate_command(clean_query)
-                    
-                    # Handle string responses (error cases)
-                    if isinstance(response, str):
-                        if response.startswith('{'):
-                            try:
-                                response = json.loads(response)
-                            except json.JSONDecodeError:
-                                response = {
-                                    'command': str(response),
-                                    'explanation': 'Could not parse response',
-                                    'detailed_explanation': 'No detailed explanation available'
-                                }
-                        else:
-                            response = {
-                                'command': str(response),
-                                'explanation': 'Could not get structured response',
-                                'detailed_explanation': 'No detailed explanation available'
-                            }
-                    
-                    # Ensure response is a dictionary with the proper fields
-                    if not isinstance(response, dict):
-                        response = {
-                            'command': str(response),
-                            'explanation': 'Could not get structured response',
-                            'detailed_explanation': 'No detailed explanation available'
-                        }
-                    
-                    # Extract command from structured response
-                    command = str(response.get('command', '')).strip()
-                    if not command:
-                        command = f"echo 'Could not generate command for: {clean_query}'"
-                    
-                    self.console.print(f"[bold bright_red]{command}[/bold bright_red]")
-                    
-                    # Show explanation based on verbosity level
-                    if very_verbose and 'detailed_explanation' in response:
-                        self.console.print(f"[bold green]Detailed Explanation:[/bold green]")
-                        detailed = str(response.get('detailed_explanation', '')).strip()
-                        if detailed:
-                            # Preserve structure while cleaning up markdown
-                            formatted = []
-                            current_indent = 0
-                            in_list = False
-                            
-                            for line in detailed.split('\n'):
-                                # Clean line and detect structure
-                                clean_line = line.replace('**', '').replace('`', '').strip()
-                                
-                                # Detect section headers
-                                if clean_line.endswith(':'):
-                                    formatted.append(f"\n[bold]{clean_line}[/bold]")
-                                    in_list = False
-                                # Detect main bullet points
-                                elif clean_line.startswith('* ') or clean_line.startswith('- '):
-                                    formatted.append(f"  • {clean_line[2:]}")
-                                    current_indent = 2
-                                    in_list = True
-                                # Detect sub-points
-                                elif clean_line.startswith('  * ') or clean_line.startswith('  - '):
-                                    formatted.append(f"    ◦ {clean_line[4:]}")
-                                    current_indent = 4
-                                    in_list = True
-                                # Handle continuation lines
-                                elif in_list and clean_line:
-                                    formatted.append(f"{' ' * current_indent}{clean_line}")
-                                # Handle regular paragraphs
-                                else:
-                                    if formatted and not formatted[-1].endswith('\n'):
-                                        formatted.append('\n')
-                                    formatted.append(textwrap.fill(
-                                        clean_line,
-                                        width=80,
-                                        initial_indent='  ',
-                                        subsequent_indent='    '
-                                    ))
-                            
-                            # Print formatted lines
-                            for line in '\n'.join(formatted).split('\n'):
-                                if line.startswith('[bold cyan]'):
-                                    self.console.print(
-                                        line,
-                                        style="green_yellow",
-                                        end=""
-                                    )
-                                else:
-                                    self.console.print(
-                                        f"[green_yellow]{line}[/green_yellow]",
-                                        highlight=False
-                                    )
-                    elif verbose and 'explanation' in response:
-                        self.console.print(f"[bold green]Explanation:[/bold green]")
-                        explanation = str(response.get('explanation', '')).strip()
-                        if explanation:
-                            for line in explanation.split('\n'):
-                                self.console.print(f"[green_yellow]{line.strip()}[/green_yellow]")
-                    
-                    return
-                
-                except Exception as e:
-                    self.console.print(f"[red]Error generating command: {str(e)}[/red]")
-                    # Try to provide a helpful error message
-                    explanation = await self.llm_client.explain_error(str(e))
-                    if explanation:
-                        self.console.print(f"[bright_yellow]{explanation}[/bright_yellow]")
-                    return
+                await self.handle_natural_language_query(clean_query, verbose, very_verbose)
+                return
             
-            # Handle cd command specially
             if query.startswith('cd ') or query == 'cd':
                 path = query.split(None, 1)[1] if ' ' in query else os.getenv("HOME")
                 self.core_shell.cd(path)
                 return
             
-            # For all other commands, execute directly
             if '|' in query:
                 commands = [cmd.strip() for cmd in query.split('|')]
                 await self.execute_pipeline(commands)
@@ -288,60 +179,26 @@ class LLMShell:
                 await self.execute_shell_command(query)
             
         except Exception as e:
-            self.console.print(f"[bold red]Error:[/bold red] {str(e)}")
-            explanation = await self.llm_client.explain_error(str(e))
-            parts = explanation.split('\n', 1)
-            if len(parts) > 1:
-                # Clean up any accidental numbering
-                solution = parts[1].replace("2. ", "").replace("- ", "• ").strip()
-                self.console.print(f"[green]Solution:[/green] {solution}")
+            await self.error_handler.handle_error(e)
     
     async def run(self):
         """Run the interactive shell."""
-        # ASCII Art welcome banner
-        self.console.print("""[bold cyan]
-    ╔══════════════════════════════════════╗
-    ║  ┌─┐┬ ┬┌─┐┬  ┬    ╔═╗╔═╗╔═╗╦╔═╗╔╦╗ ║
-    ║  └─┐├─┤├┤ │  │    ╠═╣╚═╗╚═╗║╚═╗ ║  ║
-    ║  └─┘┴ ┴└─┘┴─┘┴─┘  ╩ ╩╚═╝╚═╝╩╚═╝ ╩  ║
-    ║                                      ║
-    ║     Your AI-Powered Shell Helper     ║
-    ╚══════════════════════════════════════╝[/bold cyan]
-""")
-        self.console.print("[bold]Welcome to LLM Shell Assistant![/bold]")
-        self.console.print("Type 'exit' or press Ctrl+D to exit.")
-        self.console.print("Start your query with # to use natural language")
-        self.console.print("Add -v for brief explanation")
-        self.console.print("Add -vv for detailed explanation")
-        self.console.print("Example: #how do I copy files with scp -vv\n")
+        self.ui.show_welcome_banner()
         
         while True:
             try:
-                command = await self.session.prompt_async(
-                    self.get_prompt,
-                )
-                
+                command = await self.session.prompt_async(self.get_prompt)
                 if command.strip() == "exit":
                     break
-                
                 await self.handle_command(command)
-                
             except EOFError:
                 break
             except KeyboardInterrupt:
                 continue
             except Exception as e:
-                self.console.print(f"[bold red]Error:[/bold red] {str(e)}")
+                await self.error_handler.handle_error(e)
         
-        self.console.print("\nGoodbye!")
-
-    def _show_welcome(self):
-        self.console.print(
-            "[bold green]Natural Language Shell[/green]\n"
-            "Start commands with [cyan]#[/cyan] to use natural language\n"
-            "Add [cyan]-v[/cyan] to see command explanation\n"
-            "Example: [cyan]#list large files -v[/cyan]"
-        )
+        self.ui.show_goodbye()
 
 def main():
     """Entry point for the shell."""

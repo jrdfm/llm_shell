@@ -5,6 +5,7 @@ LLM integration module for handling interactions with Google's Gemini model.
 import os
 import json
 import hashlib
+import time
 from typing import Optional, Dict
 from functools import lru_cache
 from pathlib import Path
@@ -59,12 +60,15 @@ class LLMClient:
             top_p=0.95,
             top_k=64,
             max_output_tokens=self.max_tokens,
-            response_mime_type="text/plain",
+            response_mime_type="application/json",
         )
         
-        # Initialize cache
+        # Initialize cache with debounced save
         self.cache_file = Path.home() / '.llm_shell_cache.json'
         self._cache = {}
+        self._dirty = False
+        self._last_save = 0
+        self._save_interval = 60  # Save at most once per minute
         self._load_cache()
     
     def _load_cache(self):
@@ -79,10 +83,16 @@ class LLMClient:
             self.persistent_cache = {}
     
     def _save_cache(self):
-        """Save the persistent cache to disk."""
+        """Save the persistent cache to disk with debouncing."""
+        current_time = time.time()
+        if not self._dirty or (current_time - self._last_save) < self._save_interval:
+            return
+            
         try:
             with open(self.cache_file, 'w') as f:
                 json.dump(self.persistent_cache, f)
+            self._last_save = current_time
+            self._dirty = False
         except Exception:
             pass  # Fail silently if we can't save cache
     
@@ -99,6 +109,9 @@ class LLMClient:
         """Add a response to both memory and persistent cache."""
         self.persistent_cache[cache_key] = response
         self._get_from_memory_cache.cache_clear()  # Clear LRU cache to update with new value
+        self._dirty = True
+        
+        # Try to save cache if enough time has passed
         self._save_cache()
     
     def _get_from_cache(self, cache_key: str) -> Optional[Dict]:
