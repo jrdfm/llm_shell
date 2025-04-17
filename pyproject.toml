@@ -1,0 +1,46 @@
+[build-system]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "Cython>=0.29.21",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shell-llm"
+version = "0.1.2"
+description = "Interactive shell with LLM-powered features"
+readme = "README.md"
+authors = [
+    {name = "LLM Shell Team", email = "your.email@example.com"}
+]
+requires-python = ">=3.8"
+dependencies = [
+    "prompt-toolkit>=3.0.0",
+    "rich>=10.0.0",
+    "google-genai",
+    "python-dotenv>=1.0.0"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+keywords = ["shell", "llm", "assistant", "terminal"]
+
+[project.scripts]
+shell-llm = "shell:main"
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/llm_shell"
+"Bug Tracker" = "https://github.com/yourusername/llm_shell/issues"
+"Source" = "https://github.com/yourusername/llm_shell"
+
+[tool.setuptools]
+py-modules = ["llm", "formatters", "shell", "error_handler", "ui", "models", "completions", "utils", "__main__", "__init__"] 

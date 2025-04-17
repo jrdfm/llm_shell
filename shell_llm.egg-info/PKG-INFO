@@ -1,3 +1,33 @@
+Metadata-Version: 2.4
+Name: shell-llm
+Version: 0.1.2
+Summary: Interactive shell with LLM-powered features
+Home-page: https://github.com/yourusername/shell-llm
+Author: LLM Shell Team
+Author-email: LLM Shell Team <your.email@example.com>
+Project-URL: Homepage, https://github.com/yourusername/llm_shell
+Project-URL: Bug Tracker, https://github.com/yourusername/llm_shell/issues
+Project-URL: Source, https://github.com/yourusername/llm_shell
+Keywords: shell,llm,assistant,terminal
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: prompt-toolkit>=3.0.0
+Requires-Dist: rich>=10.0.0
+Requires-Dist: google-genai
+Requires-Dist: python-dotenv>=1.0.0
+Dynamic: author
+Dynamic: home-page
+Dynamic: requires-python
+
 # LLM Shell Assistant
 
 An intelligent shell that combines traditional shell capabilities with natural language processing. Features include command generation from natural language, automatic error explanations, and command completion.

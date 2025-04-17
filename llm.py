@@ -7,7 +7,6 @@ import json
 import hashlib
 import time
 from typing import Optional, Dict
-from functools import lru_cache
 from pathlib import Path
 from google import genai
 from google.genai import types
@@ -65,7 +64,6 @@ class LLMClient:
         
         # Initialize cache with debounced save
         self.cache_file = Path.home() / '.llm_shell_cache.json'
-        self._cache = {}
         self._dirty = False
         self._last_save = 0
         self._save_interval = 60  # Save at most once per minute
@@ -100,33 +98,24 @@ class LLMClient:
         version = "v2"  # Increment when changing prompts
         return hashlib.sha256(f"{version}|{query_type}|{text}".encode()).hexdigest()
     
-    @lru_cache(maxsize=1000)
-    def _get_from_memory_cache(self, cache_key: str) -> Optional[str]:
+    def _get_from_cache(self, cache_key: str) -> Optional[Dict | str]:
         """Get a response from the in-memory cache."""
         return self.persistent_cache.get(cache_key)
     
     def _add_to_cache(self, cache_key: str, response):
         """Add a response to both memory and persistent cache."""
         self.persistent_cache[cache_key] = response
-        self._get_from_memory_cache.cache_clear()  # Clear LRU cache to update with new value
         self._dirty = True
         
         # Try to save cache if enough time has passed
         self._save_cache()
     
-    def _get_from_cache(self, cache_key: str) -> Optional[Dict]:
-        """Get a response from cache."""
-        cached = self._get_from_memory_cache(cache_key)
-        if cached and isinstance(cached, dict):
-            return cached
-        return None
-    
     async def complete_command(self, partial_command: str, context: Optional[dict] = None) -> str:
         """Complete a partial shell command."""
         cache_key = self._cache_key("complete", f"{partial_command}:{context}")
-        cached = self._get_from_memory_cache(cache_key)
+        cached = self._get_from_cache(cache_key)
         if cached:
-            return cached
+            return str(cached)
         
         contents = [
             types.Content(
@@ -147,25 +136,25 @@ class LLMClient:
     async def explain_error(self, error_message: str) -> str:
         """Explain a shell error message in plain English."""
         cache_key = self._cache_key("error", error_message)
-        cached = self._get_from_memory_cache(cache_key)
+        cached = self._get_from_cache(cache_key)
         if cached:
-            return cached
+            return str(cached)
         
         contents = [
             types.Content(
                 role="user",
-                parts=[{"text": "You are a shell error explainer. Given a shell error, explain it in a structured format.\n" +
+                parts=[{"text": "You are a shell error explainer. Given a shell error, explain it in a structured format using Markdown.\n" +
                        "ALWAYS return a JSON object with this exact structure:\n" +
                        "{\n" +
                        '  "problem": "One line explanation of what went wrong",\n' +
-                       '  "solution": ["Step 1 to fix", "Step 2 to fix", "Step 3 to fix"]\n' +
+                       '  "solution": ["**Step 1**: Fix details here", "**Step 2**: More details here", "**Step 3**: Additional instructions"]\n' +
                        "}\n\n" +
                        "Rules:\n" +
                        "1. problem must be a single line\n" +
-                       "2. solution must be an array of 2-4 steps\n" +
-                       "3. steps should be clear and actionable\n" +
-                       "4. no numbered lists in steps\n" +
-                       "5. MUST return valid JSON\n\n" +
+                       "2. solution must be an array of 2-4 steps with Markdown formatting\n" +
+                       "3. steps should be clear, actionable, and use Markdown formatting (bold, code blocks with ```)\n" +
+                       "4. use code blocks for command examples (```bash ... ```)\n" +
+                       "5. MUST return valid JSON with properly escaped Markdown\n\n" +
                        f"Error: {error_message}"}]
             )
         ]
@@ -181,25 +170,32 @@ class LLMClient:
     async def explain_command(self, command: str) -> str:
         """Explain what a shell command does in plain English."""
         cache_key = self._cache_key("explain", command)
-        cached = self._get_from_memory_cache(cache_key)
+        cached = self._get_from_cache(cache_key)
         if cached:
-            return cached
+            return str(cached)
         
         contents = [
             types.Content(
                 role="user",
                 parts=[{"text": 
-                    "Explain this command in 4 bullet points:\n"
+                    "Explain this command in markdown format with 4 sections:\n"
                     "1. Primary purpose\n"
                     "2. Key components\n"
                     "3. Common use cases\n"
                     "4. Important notes\n"
                     f"Command: {command}\n"
-                    "Format response exactly like:\n"
-                    "- Purpose: ...\n"
-                    "- Components: ...\n"
-                    "- Use cases: ...\n"
-                    "- Notes: ..."}]
+                    "Format response in markdown like:\n"
+                    "## Purpose\n"
+                    "...\n\n"
+                    "## Components\n"
+                    "- component1: what it does\n"
+                    "- component2: what it does\n\n"
+                    "## Use cases\n"
+                    "- use case 1\n"
+                    "- use case 2\n\n"
+                    "## Important Notes\n"
+                    "- note 1\n"
+                    "- note 2"}]
             )
         ]
         
@@ -215,7 +211,7 @@ class LLMClient:
         """Generate a shell command from natural language, using structured output."""
         cache_key = self._cache_key("generate", f"{natural_language}:{context}")
         cached = self._get_from_cache(cache_key)
-        if cached:
+        if cached and isinstance(cached, dict):
             return cached
         
         try:
@@ -228,11 +224,23 @@ class LLMClient:
                             text=f"""Convert this natural language query to a shell command and provide two levels of explanation:
 1. A brief explanation of what the command does
 2. A detailed explanation including:
-   - All important command options and flags used
-   - What each part of the command does
-   - Common variations and use cases
-   - Any relevant examples
+   - All important command options and flags used (use `code` format for flags)
+   - What each part of the command does (use **bold** for command parts) 
+   - Common variations and use cases (use markdown lists)
+   - Any relevant examples (use ```bash ... ``` code blocks)
    - Important notes or warnings
+
+Format the response using markdown with sections like:
+## Command Options
++- `-f`: force option that does X
+
+## Examples
+```bash
+example command here
+```
+
+## Important Notes and Warnings
++- Warning about potential issues
 
 Query: {natural_language}"""
                         )
@@ -333,5 +341,4 @@ Query: {natural_language}"""
     def clear_cache(self):
         """Call this after making prompt changes"""
         self.persistent_cache = {}
-        self._save_cache()
-        self._get_from_memory_cache.cache_clear() 
+        self._save_cache() 

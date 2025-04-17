@@ -1,0 +1,4 @@
+# Keep example env file
+include .env.example
+# Keep C extension source files
+recursive-include core * 
