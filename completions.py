@@ -65,85 +65,114 @@ class ShellCompleter(Completer):
                     display=f'${var_name}'
                 )
 
+    def _extract_path_prefix(self, document):
+        """Extract the potential path string immediately before the cursor."""
+        text = document.text_before_cursor
+        # Find the start of the current word/path segment
+        start_index = len(text)
+        while start_index > 0 and not text[start_index - 1].isspace():
+            start_index -= 1
+        return text[start_index:]
+
     def _complete_path(self, document):
         """Yield completions for file/directory paths.
            Handles: ~, /path, ./path, ../path, partial_name
         """
-        word = document.get_word_before_cursor()
-        if not word:
-            # If triggered on empty space, list CWD
-            dir_name = self.core_shell.get_cwd()
+        path_prefix = self._extract_path_prefix(document)
+        # print(f"\nCompleting path prefix: '{path_prefix}'") # Debug: COMMENTED
+
+        # Determine the directory to search in and the partial name to match
+        if not path_prefix or path_prefix.endswith('/'):
+            # If prefix is empty or ends with /, list contents of the directory
+            path = os.path.expanduser(path_prefix or '.') # Expand ~ or use CWD
+            if not os.path.isabs(path):
+                dir_name = os.path.join(self.core_shell.get_cwd(), path)
+            else:
+                dir_name = path
+            dir_name = os.path.normpath(dir_name)
             partial_name = ''
         else:
-            path = os.path.expanduser(word) # Expand ~
+            # Completing a partial name
+            path = os.path.expanduser(path_prefix) # Expand ~
             dir_name = os.path.dirname(path)
             partial_name = os.path.basename(path)
 
-            # If dirname is empty, it means we're completing in the CWD
-            if not dir_name:
+            if not dir_name: # No directory part, complete in CWD
                 dir_name = self.core_shell.get_cwd()
-            # If dirname is relative, make it absolute relative to CWD
             elif not os.path.isabs(dir_name):
-                current_shell_cwd = self.core_shell.get_cwd()
-                dir_name = os.path.join(current_shell_cwd, dir_name)
-                # Normalize in case of .. etc.
-                dir_name = os.path.normpath(dir_name)
+                # Relative path, join with CWD
+                dir_name = os.path.join(self.core_shell.get_cwd(), dir_name)
+            
+            dir_name = os.path.normpath(dir_name)
+
+        # print(f"  Dir: '{dir_name}', Partial: '{partial_name}'") # Debug: COMMENTED
 
         try:
-            # Ensure directory exists before globbing
+            # Ensure the base directory exists
             if not os.path.isdir(dir_name):
+                # print(f"  Directory not found: {dir_name}") # Debug: COMMENTED
                 return
 
-            # Use glob to find matches
+            # Use glob to find matches for the partial name within the directory
             pattern = os.path.join(dir_name, partial_name + '*')
-            # print(f"\nGlobbing: {pattern}\n") # Debug print
+            # print(f"  Globbing: {pattern}") # Debug: COMMENTED
 
             for match in glob.glob(pattern):
                 basename = os.path.basename(match) # Get only the filename/dirname part
-                completion = basename
-                start_pos = -len(partial_name) if partial_name else 0
+                # print(f"    Match found: {match}, Basename: {basename}") # Debug: COMMENTED
+                
+                # The text to be inserted completes the partial name
+                # If partial_name was '', completion is the full basename
+                # If partial_name was 'sub_d', completion is 'sub_dir'
+                completion_text = basename
+                display_text = basename # How it appears in the completion list
+                
+                # The start position is relative to the beginning of the word/path prefix
+                start_pos = -len(partial_name)
 
                 try:
-                    # Check if it's a directory to add a slash
+                    # Add slash if it's a directory
                     if os.path.isdir(match):
-                        completion += '/'
-                except OSError: # Handle potential permission error on isdir check
-                    pass # Just yield without the slash
+                        completion_text += '/'
+                        display_text += '/' # Also show slash in display
+                except OSError:
+                    pass 
 
+                # print(f"      Yielding: text='{completion_text}', start={start_pos}, display='{display_text}'") # Debug: COMMENTED
                 yield Completion(
-                    completion,
+                    completion_text,
                     start_position=start_pos,
-                    display=basename # Show only the basename in the list
+                    display=display_text
                 )
         except OSError as e:
-            # print(f"\nOSError during path completion: {e}\n") # Debug print
+            # print(f"\nOSError during path completion: {e}\n") # Debug: COMMENTED
             pass
         except Exception as e:
-            # print(f"\nUnexpected error during path completion: {e}\n") # Debug print
+            # print(f"\nUnexpected error during path completion: {e}\n") # Debug: COMMENTED
             pass
 
     def get_completions(self, document, complete_event):
         """Determine completion type and yield results."""
         text = document.text_before_cursor
-        word = document.get_word_before_cursor()
+        word = document.get_word_before_cursor() # Still useful for some checks
+        path_prefix = self._extract_path_prefix(document) # Get the full path segment
 
-        # Very basic context detection: Is it the first word?
-        # This determines if we should offer commands.
+        # Basic context detection: Is it the first word?
         stripped_text = text.lstrip()
-        is_first_word = not stripped_text or stripped_text.startswith(word)
+        is_first_word = not stripped_text or stripped_text.startswith(path_prefix)
         # TODO: Improve context detection (e.g., after pipe, command specific args)
 
         try:
-            if word.startswith('$'):
-                yield from self._complete_environment_variable(word)
+            if path_prefix.startswith('$'):
+                # Pass the actual prefix including $ for env var completion
+                yield from self._complete_environment_variable(path_prefix)
             elif is_first_word:
                 # On the first word, complete commands AND paths
-                yield from self._complete_command(word)
+                yield from self._complete_command(word) # Command completion uses the std word
                 yield from self._complete_path(document)
             else:
                 # Otherwise (likely an argument), only complete paths
                 yield from self._complete_path(document)
         except Exception as e:
-            # Add broad exception handling for debugging completer issues
-            # print(f"\nError in get_completions: {type(e).__name__}: {e}\n")
+            # print(f"\nError in get_completions: {type(e).__name__}: {e}\n") # Debug: COMMENTED
             pass # Avoid crashing the prompt 
