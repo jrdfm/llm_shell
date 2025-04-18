@@ -38,19 +38,19 @@ class LLMShell:
         self.username = os.getenv("USER", "user")
         self.hostname = os.uname().nodename
         
-        self.session = PromptSession(
-            history=FileHistory(self.history_file),
-            auto_suggest=AutoSuggestFromHistory(),
-            completer=ShellCompleter(),
-            enable_history_search=True,
-        )
-        
         # Initialize components
         self.core_shell = Shell()
         self._llm_client = None
         self.formatter = ResponseFormatter(self.console)
         self.error_handler = ErrorHandler(self.console, self.llm_client)
         self.ui = ShellUI(self.console)
+
+        self.session = PromptSession(
+            history=FileHistory(self.history_file),
+            auto_suggest=AutoSuggestFromHistory(),
+            completer=ShellCompleter(core_shell=self.core_shell),
+            enable_history_search=True,
+        )
         
         # Clear the cache on startup
         if self.llm_client:

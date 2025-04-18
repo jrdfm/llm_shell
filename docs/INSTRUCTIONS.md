@@ -48,6 +48,31 @@ We use `pytest` for testing.
     pytest
     ```
 
+### 3.5. Building and Testing a Local Install (Simulating User Install)
+
+This simulates the actual user installation process from built artifacts and helps catch packaging issues.
+
+```bash
+# Optional: Clean old builds
+# rm -rf dist/ build/ shell_llm.egg-info/ core.cpython-*.so
+
+# Build using the modern method (creates sdist and wheel in dist/)
+python -m build
+
+# Uninstall any old version (if present)
+pip uninstall shell-llm -y
+
+# Install the newly built wheel (replace * with actual version/tags)
+pip install dist/shell_llm-*.whl
+
+# Run tests against the installed package
+pytest test_core.py
+pytest test_shell_integration.py
+
+# You can also manually run the installed command
+# shell-llm
+```
+
 ### 4. Incrementing Version Number
 
 Before creating distributable packages for a new release, **edit the `version` field** in the `[project]` section of `pyproject.toml`:
