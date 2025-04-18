@@ -24,7 +24,7 @@ setup(
     long_description_content_type='text/markdown',
     author='LLM Shell Team',
     author_email='your.email@example.com',  # Update this
-    url='https://github.com/yourusername/shell-llm',  # Update this
+    url='https://github.com/jrdfm/shell-llm',  # Update this
     py_modules=['llm', 'formatters', 'shell', 'error_handler', 'ui', 'models', 
                 'completions', 'utils', '__main__', '__init__'],
     ext_modules=[core_module],
@@ -49,8 +49,8 @@ setup(
     ],
     keywords='shell, llm, assistant, terminal',
     project_urls={
-        'Bug Reports': 'https://github.com/yourusername/shell-llm/issues',  # Update
-        'Source': 'https://github.com/yourusername/shell-llm',  # Update
+        'Bug Reports': 'https://github.com/jrdfm/shell-llm/issues',  # Update
+        'Source': 'https://github.com/jrdfm/shell-llm',  # Update
     },
     include_package_data=True,
 ) 

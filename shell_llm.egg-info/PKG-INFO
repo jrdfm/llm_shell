@@ -1,13 +1,13 @@
 Metadata-Version: 2.4
 Name: shell-llm
-Version: 0.1.2
+Version: 0.1.4
 Summary: Interactive shell with LLM-powered features
-Home-page: https://github.com/yourusername/shell-llm
+Home-page: https://github.com/jrdfm/shell-llm
 Author: LLM Shell Team
 Author-email: LLM Shell Team <your.email@example.com>
-Project-URL: Homepage, https://github.com/yourusername/llm_shell
-Project-URL: Bug Tracker, https://github.com/yourusername/llm_shell/issues
-Project-URL: Source, https://github.com/yourusername/llm_shell
+Project-URL: Homepage, https://github.com/jrdfm/llm_shell
+Project-URL: Bug Tracker, https://github.com/jrdfm/llm_shell/issues
+Project-URL: Source, https://github.com/jrdfm/llm_shell
 Keywords: shell,llm,assistant,terminal
 Classifier: Development Status :: 3 - Alpha
 Classifier: Intended Audience :: Developers
