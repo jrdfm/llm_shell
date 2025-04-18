@@ -1,10 +1,6 @@
 from setuptools import setup, Extension, find_packages
 import os
 
-# Read requirements from requirements.txt
-with open('requirements.txt') as f:
-    requirements = f.read().splitlines()
-
 # Read long description from README.md
 with open('README.md', encoding='utf-8') as f:
     long_description = f.read()
@@ -24,7 +20,6 @@ setup(
     py_modules=['llm', 'formatters', 'shell', 'error_handler', 'ui', 'models', 
                 'completions', 'utils', '__main__', '__init__'],
     ext_modules=[core_module],
-    install_requires=requirements,
     python_requires='>=3.8',
     entry_points={
         'console_scripts': [
