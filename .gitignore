@@ -10,4 +10,4 @@ shell_llm.egg-info/
 test.py
 test_core.py
 update_and_publish.py
-*.sh
+
