@@ -253,32 +253,43 @@ const char* shell_getenv(ShellContext *ctx, const char *name) {
 // Set environment variable
 int shell_setenv(ShellContext *ctx, const char *name, const char *value) {
     char *new_var;
-    int result = asprintf(&new_var, "%s=%s", name, value);
-    if (result == -1) {
-        return -1;
-    }
-    
+    // Use snprintf to avoid potential buffer overflows if name/value are huge,
+    // though the immediate issue is the realloc below.
+    int required_size = snprintf(NULL, 0, "%s=%s", name, value);
+    if (required_size < 0) { return -1; } // Encoding error
+    new_var = malloc(required_size + 1);
+    if (!new_var) { return -1; } // Malloc failed
+    sprintf(new_var, "%s=%s", name, value); // sprintf is safe here due to size check
+
     // Find existing variable
-    for (int i = 0; ctx->env[i]; i++) {
+    int i;
+    for (i = 0; ctx->env[i]; i++) {
         char *equals = strchr(ctx->env[i], '=');
-        if (equals && strncmp(ctx->env[i], name, equals - ctx->env[i]) == 0) {
-            free(ctx->env[i]);
-            ctx->env[i] = new_var;
+        // Check for NULL equals just in case env var has no '='
+        if (equals && strncmp(ctx->env[i], name, equals - ctx->env[i]) == 0 && name[equals - ctx->env[i]] == '\0') {
+            free(ctx->env[i]); // Free the old string
+            ctx->env[i] = new_var; // Assign the newly allocated string
             return 0;
         }
     }
-    
-    // Add new variable
-    int env_count = 0;
-    while (ctx->env[env_count]) env_count++;
-    
-    if (env_count >= MAX_ENV - 1) {
-        free(new_var);
-        return -1;
+
+    // --- Add new variable --- 
+    int env_count = i; // 'i' is now the index of the NULL terminator
+
+    // Resize the environment array: needs space for env_count existing pointers,
+    // the new pointer, and the new NULL terminator (env_count + 2 total)
+    char **new_env = realloc(ctx->env, sizeof(char*) * (env_count + 2));
+    if (!new_env) {
+        free(new_var); // Free the variable string we allocated
+        // ctx->env is still the old, valid pointer
+        return -1; // Realloc failed
     }
-    
+    ctx->env = new_env; // Update context pointer to the new array
+
+    // Add the new variable and the null terminator
     ctx->env[env_count] = new_var;
     ctx->env[env_count + 1] = NULL;
+
     return 0;
 }
 

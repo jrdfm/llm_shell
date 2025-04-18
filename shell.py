@@ -9,6 +9,7 @@ import os
 import sys
 import asyncio
 import shlex
+import glob
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -113,6 +114,26 @@ class LLMShell:
             'detailed_explanation': 'No detailed explanation available'
         }
     
+    def _expand_globs(self, args):
+        """Helper function to expand glob patterns in arguments."""
+        if not args:
+            return []
+
+        expanded_args = [args[0]] # Keep the command itself
+        for arg in args[1:]:
+            # Simple check for glob characters
+            if '*' in arg or '?' in arg or ('[' in arg and ']' in arg):
+                matches = glob.glob(arg, recursive=False) # Consider recursive=True?
+                if matches:
+                    expanded_args.extend(matches)
+                else:
+                    # No match, pass the pattern literally
+                    expanded_args.append(arg)
+            else:
+                # Not a glob pattern, pass as is
+                expanded_args.append(arg)
+        return expanded_args
+
     async def handle_command(self, query: str):
         """Process and execute a shell command."""
         if not query.strip():
@@ -183,9 +204,12 @@ class LLMShell:
                         else:
                             processed_cmds_str.append(cmd_str)
 
-                    # Parse each processed stage using shlex
-                    pipeline_args = [shlex.split(cmd) for cmd in processed_cmds_str]
-                    valid_pipeline_args = [args for args in pipeline_args if args]
+                    # Parse each processed stage using shlex and expand globs
+                    pipeline_args_parsed = [shlex.split(cmd) for cmd in processed_cmds_str]
+                    # Expand globs for each command in the pipeline
+                    pipeline_args_expanded = [self._expand_globs(parsed_cmd) for parsed_cmd in pipeline_args_parsed]
+
+                    valid_pipeline_args = [args for args in pipeline_args_expanded if args]
                     if not valid_pipeline_args:
                          error_msg = "Invalid empty pipeline"
                          exit_code = 1
@@ -194,10 +218,14 @@ class LLMShell:
                 else:
                     # Handle Single Command
                     command_description = "Command"
-                    args = shlex.split(query) # Parse the (potentially modified) query
-                    if not args: 
-                         return 
-                    result = self.core_shell.execute(args)
+                    # Parse the (potentially modified) query
+                    args_parsed = shlex.split(query)
+                    if not args_parsed:
+                         return # Empty command
+                    # Expand globs
+                    args_expanded = self._expand_globs(args_parsed)
+
+                    result = self.core_shell.execute(args_expanded)
             
             # Process result from core shell execution (if not handled by built-in)
             if result is not None:
