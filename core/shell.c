@@ -12,6 +12,7 @@
 #define MAX_ARGS 256
 #define MAX_ENV 1024
 #define MAX_ERROR_LEN 4096
+#define MAX_ARG_LEN 1024 // Define a maximum length for a single argument
 
 // Initialize shell context
 ShellContext* shell_init(void) {
@@ -25,69 +26,31 @@ ShellContext* shell_init(void) {
     extern char **environ;
     int env_count = 0;
     while (environ[env_count]) env_count++;
-    
+    // Allocate memory for environment variables
     ctx->env = malloc(sizeof(char*) * (env_count + 1));
     for (int i = 0; i < env_count; i++) {
         ctx->env[i] = strdup(environ[i]);
     }
-    ctx->env[env_count] = NULL;
+    ctx->env[env_count] = NULL;// Null-terminate the environment array
     
-    ctx->last_exit_code = 0;
-    ctx->interactive = isatty(STDIN_FILENO);
-    ctx->last_error = NULL;
+    ctx->last_exit_code = 0;// Initialize last exit code to 0
+    ctx->interactive = isatty(STDIN_FILENO);// Check if the shell is interactive
+    ctx->last_error = NULL;// Initialize last error to NULL
     
     return ctx;
 }
 
-// Parse command into arguments with quote handling
-static char** parse_command(const char *command, int *argc) {
-    char **argv = malloc(sizeof(char*) * MAX_ARGS);
-    char *cmd = strdup(command);
-    int i = 0;
-    char *p = cmd;
-    int in_quotes = 0;
-    char quote_char = 0;
-    char *start = p;
-    
-    while (*p && i < MAX_ARGS - 1) {
-        if (*p == '"' || *p == '\'') {
-            if (!in_quotes) {
-                quote_char = *p;
-                in_quotes = 1;
-                start = p + 1;
-            } else if (*p == quote_char) {
-                in_quotes = 0;
-                *p = '\0';
-                argv[i++] = strdup(start);
-                start = p + 1;
-            }
-        } else if ((*p == ' ' || *p == '\t' || *p == '\n') && !in_quotes) {
-            if (p > start) {
-                *p = '\0';
-                argv[i++] = strdup(start);
-            }
-            start = p + 1;
-        }
-        p++;
+// Execute a single command, taking pre-parsed arguments
+// Note: The caller (Python wrapper) is responsible for freeing argv memory later
+int shell_execute(ShellContext *ctx, char *const argv[]) {
+    // Check if argv is valid and has at least one argument (the command itself)
+    if (!argv || !argv[0]) return -1;
+    int argc = 0;
+    while(argv[argc] != NULL) {
+        argc++;
     }
-    
-    // Handle last argument
-    if (p > start && i < MAX_ARGS - 1) {
-        argv[i++] = strdup(start);
-    }
-    
-    argv[i] = NULL;
-    *argc = i;
-    
-    free(cmd);
-    return argv;
-}
+    if (argc == 0) return -1;
 
-// Execute a single command
-int shell_execute(ShellContext *ctx, const char *command) {
-    int argc;
-    char **argv = parse_command(command, &argc);
-    if (!argv || argc == 0) return -1;
 
     // Free previous error if any
     if (ctx->last_error) {
@@ -97,21 +60,27 @@ int shell_execute(ShellContext *ctx, const char *command) {
 
     // Handle built-in cd
     if (strcmp(argv[0], "cd") == 0) {
-        int ret = shell_cd(ctx, argc > 1 ? argv[1] : getenv("HOME"));
-        if (ret != 0) {
-            const char *err = strerror(errno);
-            ctx->last_error = strdup(err);
+        // Determine path: argv[1] or HOME if argv[1] is NULL or missing
+        const char *path_to_cd = (argc > 1 && argv[1] != NULL) ? argv[1] : getenv("HOME");
+        if (path_to_cd == NULL) { // Handle case where HOME is not set
+             ctx->last_error = strdup("cd: HOME not set");
+             return -1; // Or some other error code
         }
-        for (int i = 0; argv[i]; i++) free(argv[i]);
-        free(argv);
+        int ret = shell_cd(ctx, path_to_cd);
+        if (ret != 0) {
+            // Use strerror_r for thread safety if this were multithreaded,
+            // but strerror is fine for now. Capture error before it's overwritten.
+            const char *err_msg = strerror(errno);
+            ctx->last_error = strdup(err_msg ? err_msg : "Unknown error");
+        }
+        // No need to free argv here, Python wrapper owns it
         return ret;
     }
 
     // Create pipe for error output
     int error_pipe[2];
     if (pipe(error_pipe) == -1) {
-        for (int i = 0; argv[i]; i++) free(argv[i]);
-        free(argv);
+        // Cannot easily report error here without overwriting errno
         return -1;
     }
 
@@ -119,115 +88,175 @@ int shell_execute(ShellContext *ctx, const char *command) {
     if (pid < 0) {
         close(error_pipe[0]);
         close(error_pipe[1]);
-        for (int i = 0; argv[i]; i++) free(argv[i]);
-        free(argv);
+        // Cannot easily report error here
         return -1;
     } else if (pid == 0) {
         // Child process
         close(error_pipe[0]);  // Close read end
-        
+
         // Redirect stderr to pipe
         dup2(error_pipe[1], STDERR_FILENO);
         close(error_pipe[1]);  // Close original write end
-        
+
+        // Set process group ID (useful for killing process trees later if needed)
+        // setpgid(0, 0);
+
+        // Execute command using the provided argv
         execvp(argv[0], argv);
-        
-        // If execvp fails, write error to pipe
-        char error_msg[MAX_ERROR_LEN];
-        snprintf(error_msg, sizeof(error_msg), "%s: %s", argv[0], strerror(errno));
-        ssize_t bytes_written = write(STDERR_FILENO, error_msg, strlen(error_msg));
-        if (bytes_written < 0) {
-            snprintf(error_msg, sizeof(error_msg), "Failed to write error message: %s", strerror(errno));
-        }
-        _exit(127);
+
+        // If execvp fails, write error to pipe (which is now stderr)
+        // Use dprintf for safer writing to fd
+        dprintf(STDERR_FILENO, "%s: %s", argv[0], strerror(errno));
+        // perror(argv[0]); // Alternative way to write execvp error
+
+        _exit(127); // Use _exit in child after fork
     } else {
         // Parent process
         close(error_pipe[1]);  // Close write end
-        
+
         // Read error output
         char error_buffer[MAX_ERROR_LEN] = {0};
         ssize_t bytes_read = read(error_pipe[0], error_buffer, sizeof(error_buffer) - 1);
         close(error_pipe[0]);  // Close read end
-        
+
         // Wait for child
         int status;
         waitpid(pid, &status, 0);
         ctx->last_exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        
-        // Store error if any
-        if (bytes_read > 0) {
-            error_buffer[bytes_read] = '\0';  // Ensure null termination
+
+        // Store error if execvp failed (indicated by specific exit code and/or error message)
+        // Only store if exit code is non-zero AND error message exists
+        if (ctx->last_exit_code != 0 && bytes_read > 0) {
+            error_buffer[bytes_read] = '\\0';  // Ensure null termination
+            // Avoid overwriting existing error from builtins etc. if not needed
+            if (ctx->last_error) free(ctx->last_error);
             ctx->last_error = strdup(error_buffer);
         }
-        
-        // Clean up
-        for (int i = 0; argv[i]; i++) free(argv[i]);
-        free(argv);
-        
+
+        // No need to free argv, Python wrapper owns it
+
         return ctx->last_exit_code;
     }
 }
 
-// Execute a pipeline of commands
-int shell_execute_pipeline(ShellContext *ctx, const char **commands, int num_commands) {
-    if (num_commands == 0) return 0;
-    if (num_commands == 1) return shell_execute(ctx, commands[0]);
+// Execute a pipeline of commands, taking pre-parsed arguments for each command
+// Note: Caller (Python wrapper) is responsible for freeing pipeline_argv later
+int shell_execute_pipeline(ShellContext *ctx, char *const *const *pipeline_argv, int num_commands) {
+    if (num_commands <= 0) return 0;
 
-    int pipes[num_commands-1][2];
+    // If only one command, execute it directly (more efficient)
+    if (num_commands == 1) {
+        // Need to handle potential NULL argv[0] case if outer list allows empty lists
+        if (!pipeline_argv[0] || !pipeline_argv[0][0]) return -1; // Invalid command
+        return shell_execute(ctx, pipeline_argv[0]);
+    }
+
+
+    int pipes[num_commands - 1][2];
     pid_t pids[num_commands];
+    int status = 0; // Hold status of last command
 
     // Create pipes
-    for (int i = 0; i < num_commands-1; i++) {
+    for (int i = 0; i < num_commands - 1; i++) {
         if (pipe(pipes[i]) == -1) {
+            perror("pipe");
+            // TODO: Cleanup any already created pipes/processes
             return -1;
         }
     }
 
     // Create processes
     for (int i = 0; i < num_commands; i++) {
+         // Check if the command itself is valid before forking
+        if (!pipeline_argv[i] || !pipeline_argv[i][0]) {
+             fprintf(stderr, "Error: Invalid empty command in pipeline stage %d\\n", i);
+             // TODO: Proper cleanup of pipes/processes
+             // For now, just mark as error and continue cleanup below
+             pids[i] = -1; // Mark as invalid pid
+             continue;
+        }
+
         pids[i] = fork();
         if (pids[i] < 0) {
-            return -1;
+            perror("fork");
+            // TODO: Cleanup
+            return -1; // Or try to kill already started children? Complex.
         }
-        
+
         if (pids[i] == 0) {
             // Child process
-            
-            // Setup pipes
+
+            // Redirect input from previous command's pipe (if not the first command)
             if (i > 0) {
-                dup2(pipes[i-1][0], STDIN_FILENO);
+                if (dup2(pipes[i - 1][0], STDIN_FILENO) == -1) {
+                    perror("dup2 stdin");
+                    _exit(1);
+                }
             }
-            if (i < num_commands-1) {
-                dup2(pipes[i][1], STDOUT_FILENO);
+            // Redirect output to next command's pipe (if not the last command)
+            if (i < num_commands - 1) {
+                if (dup2(pipes[i][1], STDOUT_FILENO) == -1) {
+                    perror("dup2 stdout");
+                    _exit(1);
+                }
             }
-            
-            // Close all pipe fds
-            for (int j = 0; j < num_commands-1; j++) {
+
+            // Close *all* pipe file descriptors in the child
+            for (int j = 0; j < num_commands - 1; j++) {
                 close(pipes[j][0]);
                 close(pipes[j][1]);
             }
 
-            // Execute command
-            int argc;
-            char **argv = parse_command(commands[i], &argc);
-            execvp(argv[0], argv);
+            // Execute command using the provided argv for this stage
+            execvp(pipeline_argv[i][0], pipeline_argv[i]);
+
+            // If execvp fails:
+            perror(pipeline_argv[i][0]); // Write error to stderr (which might be piped)
             _exit(127);
         }
     }
 
-    // Parent: close all pipe fds
-    for (int i = 0; i < num_commands-1; i++) {
+    // Parent: close all pipe file descriptors
+    for (int i = 0; i < num_commands - 1; i++) {
         close(pipes[i][0]);
         close(pipes[i][1]);
     }
 
-    // Wait for all processes
-    int status;
+    // Parent: Wait for all child processes
+    // Store the status of the *last* command in the pipeline
     for (int i = 0; i < num_commands; i++) {
-        waitpid(pids[i], &status, 0);
+        if (pids[i] > 0) { // Only wait for valid pids
+            int child_status;
+            waitpid(pids[i], &child_status, 0);
+            if (i == num_commands - 1) { // Is this the last command?
+                status = child_status;
+            }
+        } else if (i == num_commands - 1) {
+            // Handle case where the last command itself was invalid before fork
+             status = -1; // Indicate error
+        }
     }
 
-    ctx->last_exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+    // Set context's last exit code based on the status of the last command
+    // TODO: Pipeline error reporting needs improvement. We don't capture stderr here.
+    if (ctx->last_error) {
+        free(ctx->last_error);
+        ctx->last_error = NULL;
+    }
+
+    // Check status from the last command
+    if (WIFEXITED(status)) {
+        ctx->last_exit_code = WEXITSTATUS(status);
+    } else if (status == -1) { // Our custom error marker
+         ctx->last_exit_code = -1; // Or some other error code
+         ctx->last_error = strdup("Invalid command in pipeline");
+    }
+     else {
+        ctx->last_exit_code = -1; // Indicate non-exit termination (signal?)
+    }
+
+    // No need to free pipeline_argv, Python wrapper owns it
     return ctx->last_exit_code;
 }
 

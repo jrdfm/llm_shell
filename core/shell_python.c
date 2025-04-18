@@ -49,72 +49,172 @@ Shell_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     return (PyObject *) self;
 }
 
+// Helper function to convert a Python list of strings to char** argv
+// Returns allocated argv (caller must free it and its contents) or NULL on failure
+static char** py_list_to_argv(PyObject* py_list) {
+    if (!PyList_Check(py_list)) {
+        PyErr_SetString(PyExc_TypeError, "Argument must be a list of strings");
+        return NULL;
+    }
+
+    Py_ssize_t argc = PyList_Size(py_list);
+    // Allocate space for char* pointers plus the terminating NULL
+    char **argv = malloc(sizeof(char*) * (argc + 1));
+    if (!argv) {
+        PyErr_NoMemory();
+        return NULL;
+    }
+
+    for (Py_ssize_t i = 0; i < argc; i++) {
+        PyObject *item = PyList_GetItem(py_list, i);
+        if (!PyUnicode_Check(item)) {
+            PyErr_SetString(PyExc_TypeError, "List items must be strings");
+            // Free already allocated strings and the argv array
+            for (Py_ssize_t j = 0; j < i; j++) {
+                free(argv[j]);
+            }
+            free(argv);
+            return NULL;
+        }
+        // PyUnicode_AsUTF8 returns a pointer to the internal buffer, which is
+        // generally okay for short-lived usage like passing to execvp.
+        // If the C function stored these pointers long-term, we'd need strdup.
+        // However, let's use strdup for safety, as C layer might evolve.
+        const char *utf8_str = PyUnicode_AsUTF8(item);
+        if (!utf8_str) { // Error during conversion
+             for (Py_ssize_t j = 0; j < i; j++) {
+                free(argv[j]);
+            }
+            free(argv);
+            return NULL; // Error already set by PyUnicode_AsUTF8
+        }
+        argv[i] = strdup(utf8_str);
+        if (!argv[i]) { // strdup failed
+            PyErr_NoMemory();
+            for (Py_ssize_t j = 0; j < i; j++) {
+                free(argv[j]);
+            }
+            free(argv);
+            return NULL;
+        }
+    }
+    argv[argc] = NULL; // Null-terminate the array
+    return argv;
+}
+
+// Helper function to free argv created by py_list_to_argv
+static void free_argv(char **argv) {
+    if (!argv) return;
+    for (int i = 0; argv[i] != NULL; i++) {
+        free(argv[i]);
+    }
+    free(argv);
+}
+
 /*
- * Python method: shell.execute(command)
- * Executes a single shell command
- * Converts Python string → C string, calls C function, converts result back to Python
+ * Python method: shell.execute(argv_list)
+ * Executes a single shell command given a list of arguments.
  */
 static PyObject *
 Shell_execute(ShellObject *self, PyObject *args)
 {
-    const char *command;
-    // Parse Python arguments into C variables
-    // "s" format means expect a string and convert to char*
-    if (!PyArg_ParseTuple(args, "s", &command))
-        return NULL;
+    PyObject *py_argv_list;
+    // Parse argument as a Python list object
+    if (!PyArg_ParseTuple(args, "O!", &PyList_Type, &py_argv_list))
+        return NULL; // Error message already set by PyArg_ParseTuple
 
-    // Call our C implementation
-    int result = shell_execute(self->ctx, command);
-    
+    // Convert Python list to C argv
+    char **argv = py_list_to_argv(py_argv_list);
+    if (!argv) {
+        return NULL; // Error message set by py_list_to_argv
+    }
+
+    // Call our C implementation with the parsed argv
+    int result = shell_execute(self->ctx, argv);
+
+    // Free the argv array and its contents
+    free_argv(argv);
+
     // Get error message if command failed
     const char *error = shell_get_error(self->ctx);
     if (result != 0 && error != NULL) {
         // Return tuple (exit_code, error_message)
         return Py_BuildValue("(is)", result, error);
     }
-    
+
     // Return just exit code if no error
     return Py_BuildValue("(iO)", result, Py_None);
 }
 
 /*
- * Python method: shell.execute_pipeline([cmd1, cmd2, ...])
- * Executes a pipeline of shell commands
- * Converts Python list of strings → C array of strings, executes, returns result
+ * Python method: shell.execute_pipeline([ [cmd1_arg0, cmd1_arg1], [cmd2_arg0], ... ])
+ * Executes a pipeline of shell commands, taking lists of arguments for each.
  */
 static PyObject *
 Shell_execute_pipeline(ShellObject *self, PyObject *args)
 {
-    PyObject *commands_list;
-    // Parse Python argument into PyObject (should be a list)
-    if (!PyArg_ParseTuple(args, "O", &commands_list))
+    PyObject *py_pipeline_list;
+    // Parse argument as a Python list object
+    if (!PyArg_ParseTuple(args, "O!", &PyList_Type, &py_pipeline_list))
         return NULL;
 
-    // Verify we got a Python list
-    if (!PyList_Check(commands_list)) {
-        PyErr_SetString(PyExc_TypeError, "Argument must be a list of strings");
-        return NULL;
+    Py_ssize_t num_commands = PyList_Size(py_pipeline_list);
+    if (num_commands == 0) {
+        return Py_BuildValue("(iO)", 0, Py_None); // Empty pipeline is success (like shell)
     }
 
-    // Get list size and allocate C array
-    Py_ssize_t num_commands = PyList_Size(commands_list);
-    const char **commands = malloc(sizeof(char *) * num_commands);
-    
-    // Convert each Python string to C string
-    for (Py_ssize_t i = 0; i < num_commands; i++) {
-        PyObject *item = PyList_GetItem(commands_list, i);
-        if (!PyUnicode_Check(item)) {
-            free(commands);
-            PyErr_SetString(PyExc_TypeError, "List items must be strings");
-            return NULL;
+    // Allocate the array of argv arrays (char***)
+    // Need space for num_commands pointers to (char**)
+    char ***pipeline_argv = malloc(sizeof(char**) * num_commands);
+    if (!pipeline_argv) {
+        PyErr_NoMemory();
+        return NULL;
+    }
+    // Initialize all pointers to NULL in case of early exit during allocation
+    for(Py_ssize_t k=0; k < num_commands; ++k) {
+        pipeline_argv[k] = NULL;
+    }
+
+    // Convert each inner list
+    Py_ssize_t i;
+    for (i = 0; i < num_commands; i++) {
+        PyObject *py_inner_list = PyList_GetItem(py_pipeline_list, i);
+        // Check if the inner item is actually a list before converting
+        if (!PyList_Check(py_inner_list)) {
+             PyErr_SetString(PyExc_TypeError, "Pipeline argument must be a list of lists of strings");
+             // Cleanup already allocated inner lists
+             for (Py_ssize_t j = 0; j < i; j++) {
+                 free_argv(pipeline_argv[j]);
+             }
+             free(pipeline_argv);
+             return NULL;
         }
-        // PyUnicode_AsUTF8 converts Python string to UTF-8 C string
-        commands[i] = PyUnicode_AsUTF8(item);
+        pipeline_argv[i] = py_list_to_argv(py_inner_list); // Reuse helper
+        if (!pipeline_argv[i]) {
+            // Error occurred in conversion, cleanup previously converted lists
+            // Note: pipeline_argv[i] is already NULL from py_list_to_argv failure
+            for (Py_ssize_t j = 0; j < num_commands; j++) { // Free all up to num_commands
+                 if(pipeline_argv[j]) free_argv(pipeline_argv[j]);
+            }
+            free(pipeline_argv);
+            return NULL; // Error already set by py_list_to_argv
+        }
     }
 
-    // Call C implementation
-    int result = shell_execute_pipeline(self->ctx, commands, num_commands);
-    free(commands);
+    // Call C implementation with the array of argv arrays
+    // Note: We cast away constness here, which is generally safe if the C
+    // function doesn't modify the strings, but technically invokes UB if it did.
+    // The C function signature uses `char *const *const *` for clarity.
+    int result = shell_execute_pipeline(self->ctx, (char *const *const *)pipeline_argv, num_commands);
+
+    // Free the allocated pipeline structure
+    for (i = 0; i < num_commands; i++) {
+        // Check pointer before freeing, in case of earlier error
+        if(pipeline_argv[i]) {
+           free_argv(pipeline_argv[i]);
+        }
+    }
+    free(pipeline_argv);
 
     // Get error message if pipeline failed
     const char *error = shell_get_error(self->ctx);
@@ -122,7 +222,6 @@ Shell_execute_pipeline(ShellObject *self, PyObject *args)
         // Return tuple (exit_code, error_message)
         return Py_BuildValue("(is)", result, error);
     }
-    
     // Return just exit code if no error
     return Py_BuildValue("(iO)", result, Py_None);
 }
@@ -201,9 +300,9 @@ Shell_get_cwd(ShellObject *self, PyObject *Py_UNUSED(ignored))
  */
 static PyMethodDef Shell_methods[] = {
     {"execute", (PyCFunction) Shell_execute, METH_VARARGS,
-     "Execute a shell command"},
+     "Execute a shell command given a list of arguments"},
     {"execute_pipeline", (PyCFunction) Shell_execute_pipeline, METH_VARARGS,
-     "Execute a pipeline of shell commands"},
+     "Execute a pipeline of commands given list of lists of arguments"},
     {"cd", (PyCFunction) Shell_cd, METH_VARARGS,
      "Change current directory"},
     {"getenv", (PyCFunction) Shell_getenv, METH_VARARGS,

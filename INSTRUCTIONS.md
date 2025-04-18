@@ -1,54 +1,104 @@
-# Build, Upload, and Setup Instructions for shell-llm
+# Build, Test, Upload, and Setup Instructions for shell-llm
 
 This document provides instructions for developers contributing to `shell-llm` and for users setting up the tool after installation.
 
-## For Developers: Building and Uploading to PyPI
+## For Developers
 
-These steps assume you have Python, pip, and Docker installed and running. It's highly recommended to work within a Python virtual environment.
+These steps assume you have Python, pip, and optionally Docker installed and running. It's highly recommended to work within a Python virtual environment.
 
-1.  **Activate Virtual Environment:**
+### 1. Environment Setup
+
+```bash
+# Create and activate a virtual environment (if not already done)
+python -m venv venv
+source venv/bin/activate
+
+# Install development dependencies
+pip install -r requirements.txt
+pip install build twine cibuildwheel pytest pytest-asyncio pytest-mock
+```
+
+### 2. Building the C Extension (Locally)
+
+After making changes to the C code (`core/shell.c`, `core/shell_python.c`) or Python code, you need to rebuild the C extension module.
+
+*   **Recommended Method (using `build`):**
+    This command builds the package and places the compiled extension (`.so`/`.pyd`) inside the source tree, allowing you to run tests directly.
     ```bash
-    source venv/bin/activate # Or your venv activation command
+    python -m build --wheel --outdir . --no-isolation
+    # Or build and install into the venv:
+    # pip install . --force-reinstall
     ```
+    *Note: Building without `--no-isolation` using `python -m build` is preferred for creating distributable packages (see step 5), but the above is often convenient for local development and testing.*
 
-2.  **Install/Update Build Tools:**
+### 3. Running Tests
+
+We use `pytest` for testing.
+
+*   **Unit Tests (C Core Interface):** These tests verify the Python interface to the C extension (`test_core.py`).
     ```bash
-    pip install --upgrade build twine cibuildwheel
+    pytest test_core.py
+    ```
+*   **Integration Tests (Shell Logic):** These tests verify the main shell logic in `shell.py`, including command handling and interaction with the core module (`test_shell_integration.py`). They use `pytest-asyncio` and `pytest-mock`.
+    ```bash
+    pytest test_shell_integration.py
+    ```
+*   **Run All Tests:**
+    ```bash
+    pytest
     ```
 
-3.  **Increment Version Number:**
-    Before uploading a new version, **edit the `version` field** in the `[project]` section of `pyproject.toml`:
-    ```toml
-    # pyproject.toml
-    [project]
-    name = "shell-llm"
-    version = "0.1.3" # <-- Increment this number
-    # ... rest of file
-    ```
+### 4. Incrementing Version Number
 
-4.  **Build Source Distribution (.tar.gz):**
-    This creates the source tarball in the `dist/` directory.
+Before creating distributable packages for a new release, **edit the `version` field** in the `[project]` section of `pyproject.toml`:
+
+```toml
+# pyproject.toml
+[project]
+name = "shell-llm"
+version = "0.1.7" # <-- Increment this number
+# ... rest of file
+```
+
+*   **Note:** The version number is **only** set in `pyproject.toml`. The `setup.py` file reads the version from there.
+
+### 5. Building Distributable Packages (sdist and wheels)
+
+*   **Clean previous builds (optional but recommended):**
+    ```bash
+    rm -rf dist/ build/ shell_llm.egg-info/ core.cpython-*.so wheelhouse/
+    ```
+*   **Build sdist and wheel using `build`:**
+    This creates the source tarball (`.tar.gz`) and a platform-specific wheel (`.whl`) in the `dist/` directory.
     ```bash
     python -m build
     ```
-    *(This will also create a `.whl` file in `dist/`, but it likely has an incompatible platform tag for PyPI if built directly on your development machine/WSL).*
-
-5.  **Build Compatible Linux Wheels (.whl) (Recommended):**
-    Since this package contains a compiled C extension, you need to build wheels in a standardized `manylinux` environment using Docker. This ensures compatibility across different Linux distributions.
+*   **Build Compatible Linux Wheels (`manylinux`) (Recommended for PyPI):**
+    Since this package contains a compiled C extension, you should build wheels in a standardized `manylinux` environment using Docker via `cibuildwheel`. This ensures compatibility across different Linux distributions.
     ```bash
     # Ensure Docker daemon is running
     cibuildwheel --platform linux
     ```
     This command builds wheels for various Python versions inside Docker containers and places the compatible `.whl` files in the `wheelhouse/` directory.
 
-6.  **Upload to PyPI:**
-    Upload both the source distribution (`.tar.gz` from `dist/`) and the compatible `manylinux` wheels (`.whl` from `wheelhouse/`).
-    ```bash
-    # Make sure filenames match your build output (especially version)
-    twine upload dist/shell_llm-0.1.3.tar.gz wheelhouse/*.whl
-    ```
-    *   You will be prompted for your PyPI username and password.
-    *   **Security Recommendation:** Use a PyPI API token. Enter `__token__` as the username and the token value as the password.
+### 6. Uploading to PyPI
+
+Upload the source distribution (`.tar.gz` from `dist/`) and the compatible `manylinux` wheels (`.whl` from `wheelhouse/`).
+
+```bash
+# Upload sdist first
+twine upload dist/*.tar.gz
+
+# Upload compatible wheels
+twine upload wheelhouse/*.whl
+```
+
+*   You will be prompted for your PyPI username and password.
+*   **Security Recommendation:** Use a PyPI API token. Enter `__token__` as the username and the token value as the password.
+
+### Important Note on Parsing
+
+Command parsing (handling quotes, escapes, whitespace) is now performed in Python within `shell.py` using the `shlex` module *before* commands are sent to the C extension (`core.Shell`). The C extension methods (`execute`, `execute_pipeline`) now expect pre-parsed lists of arguments.
 
 ## For Users: Post-Installation Setup
 

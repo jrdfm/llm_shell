@@ -8,6 +8,7 @@ Natural language queries start with '#'.
 import os
 import sys
 import asyncio
+import shlex
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -70,46 +71,6 @@ class LLMShell:
         cwd = self.core_shell.get_cwd()
         return HTML(f'<ansigreen>{self.username}@{self.hostname}</ansigreen>:<ansiblue>{cwd}</ansiblue>$ ')
     
-    async def execute_shell_command(self, command: str):
-        """Execute a shell command using the C core."""
-        try:
-            # Execute through C core and get result and error if any
-            result = self.core_shell.execute(command)
-            if isinstance(result, tuple):
-                exit_code, error_msg = result
-            else:
-                exit_code, error_msg = result, None
-            
-            # Handle any error message or non-zero exit code
-            if (error_msg and error_msg.strip()) or exit_code != 0:
-                # Get explanation and solution
-                error_text = error_msg.strip() if error_msg else f"Command failed with exit code {exit_code}"
-                await self.error_handler.handle_error(error_text)
-            return exit_code == 0
-        except Exception as e:
-            await self.error_handler.handle_error(str(e))
-            return False
-    
-    async def execute_pipeline(self, commands):
-        """Execute a pipeline of commands using the C core."""
-        try:
-            # Execute through C core and get result and error if any
-            result = self.core_shell.execute_pipeline(commands)
-            if isinstance(result, tuple):
-                exit_code, error_msg = result
-            else:
-                exit_code, error_msg = result, None
-            
-            # Handle any error message or non-zero exit code
-            if (error_msg and error_msg.strip()) or exit_code != 0:
-                # Get explanation and solution
-                error_text = error_msg.strip() if error_msg else f"Pipeline failed with exit code {exit_code}"
-                await self.error_handler.handle_error(error_text)
-            return exit_code == 0
-        except Exception as e:
-            await self.error_handler.handle_error(str(e))
-            return False
-    
     async def handle_natural_language_query(self, query: str, verbose: bool, very_verbose: bool):
         """Handle natural language query processing."""
         try:
@@ -157,6 +118,11 @@ class LLMShell:
         if not query.strip():
             return
         
+        result = None
+        exit_code = 0
+        error_msg = None
+        command_description = "Command" # For error reporting
+
         try:
             query = query.strip()
             
@@ -168,20 +134,69 @@ class LLMShell:
                 await self.handle_natural_language_query(clean_query, verbose, very_verbose)
                 return
             
+            # --- Built-in Handling (before core execution) ---
+            # Handle 'cd' separately as it must affect the parent process
             if query.startswith('cd ') or query == 'cd':
-                path = query.split(None, 1)[1] if ' ' in query else os.getenv("HOME")
-                self.core_shell.cd(path)
-                return
-            
-            if '|' in query:
-                commands = [cmd.strip() for cmd in query.split('|')]
-                await self.execute_pipeline(commands)
+                 try:
+                     args = shlex.split(query) # Use shlex even for cd for consistency
+                     path = args[1] if len(args) > 1 else os.getenv("HOME", ".")
+                     # Use core_shell.cd which updates internal CWD
+                     exit_code = self.core_shell.cd(path)
+                     if exit_code != 0:
+                         # cd itself doesn't return error message, use strerror
+                         # (Note: core_shell.cd should ideally set last_error in context)
+                         error_msg = os.strerror(abs(exit_code)) # Assuming cd returns -errno
+                 except Exception as e:
+                     error_msg = f"cd error: {e}"
+                     exit_code = 1 # Indicate error
+                 # Skip core execution for cd
+
+            # --- Core Execution --- 
             else:
-                await self.execute_shell_command(query)
+                if '|' in query:
+                    # Handle Pipeline
+                    command_description = "Pipeline"
+                    commands_str = [cmd.strip() for cmd in query.split('|')]
+                    # Parse each stage using shlex
+                    pipeline_args = [shlex.split(cmd) for cmd in commands_str]
+                    # Filter out empty commands that might result from parsing (e.g., "echo hi | | wc")
+                    valid_pipeline_args = [args for args in pipeline_args if args]
+                    if not valid_pipeline_args:
+                         error_msg = "Invalid empty pipeline"
+                         exit_code = 1
+                    else:
+                         result = self.core_shell.execute_pipeline(valid_pipeline_args)
+                else:
+                    # Handle Single Command
+                    command_description = "Command"
+                    args = shlex.split(query)
+                    if not args: # Handle empty input after parsing
+                         return # Do nothing
+                    result = self.core_shell.execute(args)
             
+            # Process result from core shell execution (if not handled by built-in)
+            if result is not None:
+                if isinstance(result, tuple):
+                    exit_code, core_error_msg = result
+                    # Prefer error message from core if available
+                    error_msg = core_error_msg if core_error_msg else error_msg
+                else:
+                    exit_code = result
+
+            # --- Error Handling --- 
+            # Handle any error message or non-zero exit code from built-ins or core
+            if (error_msg and error_msg.strip()) or exit_code != 0:
+                error_text = error_msg.strip() if error_msg else f"{command_description} failed with exit code {exit_code}"
+                # Call the async error handler
+                await self.error_handler.handle_error(error_text)
+
+        except ValueError as e:
+            # Catch shlex parsing errors
+            await self.error_handler.handle_error(f"Parsing error: {e}")
         except Exception as e:
-            await self.error_handler.handle_error(e)
-    
+            # Catch other unexpected errors during handling/execution
+            await self.error_handler.handle_error(f"Execution error: {e}")
+
     async def run(self):
         """Run the interactive shell."""
         self.ui.show_welcome_banner()

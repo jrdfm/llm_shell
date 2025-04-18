@@ -6,4 +6,8 @@ __pycache__/
 *.so
 dist/
 wheelhouse/
-shell_llm.egg-info
+shell_llm.egg-info/
+test.py
+test_core.py
+update_and_publish.py
+*.sh

@@ -15,11 +15,11 @@ typedef struct {
 // Initialize shell context
 ShellContext* shell_init(void);
 
-// Execute a command with arguments
-int shell_execute(ShellContext *ctx, const char *command);
+// Execute a command with pre-parsed arguments
+int shell_execute(ShellContext *ctx, char *const argv[]);
 
-// Execute a pipeline of commands
-int shell_execute_pipeline(ShellContext *ctx, const char **commands, int num_commands);
+// Execute a pipeline of commands with pre-parsed arguments for each stage
+int shell_execute_pipeline(ShellContext *ctx, char *const *const *pipeline_argv, int num_commands);
 
 // Change directory
 int shell_cd(ShellContext *ctx, const char *path);

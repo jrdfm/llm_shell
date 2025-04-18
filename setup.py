@@ -5,9 +5,6 @@ import os
 with open('requirements.txt') as f:
     requirements = f.read().splitlines()
 
-# Read version directly
-version = "0.1.1"
-
 # Read long description from README.md
 with open('README.md', encoding='utf-8') as f:
     long_description = f.read()
@@ -18,13 +15,12 @@ core_module = Extension('core',
 
 setup(
     name='shell-llm',
-    version=version,
     description='Interactive shell with LLM-powered features',
     long_description=long_description,
     long_description_content_type='text/markdown',
     author='LLM Shell Team',
-    author_email='your.email@example.com',  # Update this
-    url='https://github.com/jrdfm/shell-llm',  # Update this
+    author_email='jrdfm@gmail.com',  
+    url='https://github.com/jrdfm/shell-llm',  
     py_modules=['llm', 'formatters', 'shell', 'error_handler', 'ui', 'models', 
                 'completions', 'utils', '__main__', '__init__'],
     ext_modules=[core_module],
