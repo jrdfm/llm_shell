@@ -5,5 +5,5 @@
 __pycache__/
 *.so
 dist/
-whellhouse/
+wheelhouse/
 shell_llm.egg-info
