@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <libgen.h> // For basename()
 #include "shell.h"
 
 #define MAX_ARGS 256
@@ -40,8 +41,43 @@ ShellContext* shell_init(void) {
     return ctx;
 }
 
+// Helper function to reconstruct a command string from argv
+// Basic version: joins with spaces. Does NOT handle complex quoting/escaping.
+// Caller MUST free the returned string.
+static char* reconstruct_command_string(char *const argv[]) {
+    if (!argv || !argv[0]) return NULL;
+
+    // Calculate total length needed
+    size_t total_len = 0;
+    int argc = 0;
+    for (argc = 0; argv[argc]; ++argc) {
+        total_len += strlen(argv[argc]);
+    }
+    total_len += (argc > 0 ? argc - 1 : 0); // Add space for spaces between args
+    total_len += 1; // Add space for null terminator
+
+    // Allocate buffer
+    char *cmd_string = malloc(total_len);
+    if (!cmd_string) return NULL;
+
+    // Build string
+    char *current_pos = cmd_string;
+    for (int i = 0; i < argc; ++i) {
+        size_t arg_len = strlen(argv[i]);
+        memcpy(current_pos, argv[i], arg_len);
+        current_pos += arg_len;
+        if (i < argc - 1) {
+            *current_pos = ' '; // Add space
+            current_pos++;
+        }
+    }
+    *current_pos = '\0'; // Null terminate
+
+    return cmd_string;
+}
+
 // Execute a single command, taking pre-parsed arguments
-// Note: The caller (Python wrapper) is responsible for freeing argv memory later
+// Executes via /bin/sh -c "reconstructed_command_string"
 int shell_execute(ShellContext *ctx, char *const argv[]) {
     // Check if argv is valid and has at least one argument (the command itself)
     if (!argv || !argv[0]) return -1;
@@ -50,7 +86,6 @@ int shell_execute(ShellContext *ctx, char *const argv[]) {
         argc++;
     }
     if (argc == 0) return -1;
-
 
     // Free previous error if any
     if (ctx->last_error) {
@@ -77,64 +112,58 @@ int shell_execute(ShellContext *ctx, char *const argv[]) {
         return ret;
     }
 
-    // Create pipe for error output
+    // --- Execute via User Shell --- 
     int error_pipe[2];
-    if (pipe(error_pipe) == -1) {
-        // Cannot easily report error here without overwriting errno
-        return -1;
-    }
+    if (pipe(error_pipe) == -1) { return -1; }
 
     pid_t pid = fork();
-    if (pid < 0) {
-        close(error_pipe[0]);
+    if (pid < 0) { close(error_pipe[0]); close(error_pipe[1]); return -1; }
+
+    if (pid == 0) {
+        // --- Child Process ---
+        close(error_pipe[0]); // Close read end
+        dup2(error_pipe[1], STDERR_FILENO); // Redirect stderr to pipe
         close(error_pipe[1]);
-        // Cannot easily report error here
-        return -1;
-    } else if (pid == 0) {
-        // Child process
-        close(error_pipe[0]);  // Close read end
 
-        // Redirect stderr to pipe
-        dup2(error_pipe[1], STDERR_FILENO);
-        close(error_pipe[1]);  // Close original write end
+        // Reconstruct the command string
+        char *command_string = reconstruct_command_string(argv);
+        if (!command_string) {
+            dprintf(STDERR_FILENO, "Failed to reconstruct command string\n");
+            _exit(127);
+        }
 
-        // Set process group ID (useful for killing process trees later if needed)
-        // setpgid(0, 0);
+        // Get user's shell (default to /bin/bash)
+        const char *shell_path = getenv("SHELL");
+        if (!shell_path || strlen(shell_path) == 0) {
+            shell_path = "/bin/bash"; // Or /bin/sh?
+        }
+        // Get the base name for the first argument to execlp
+        char *shell_basename = basename((char *)shell_path); // basename might modify arg, cast away const
 
-        // Execute command using the provided argv
-        execvp(argv[0], argv);
+        // Execute using execlp: shell -c "command"
+        execlp(shell_path, shell_basename, "-c", command_string, (char *)NULL);
 
-        // If execvp fails, write error to pipe (which is now stderr)
-        // Use dprintf for safer writing to fd
-        dprintf(STDERR_FILENO, "%s: %s", argv[0], strerror(errno));
-        // perror(argv[0]); // Alternative way to write execvp error
+        // If execlp returns, it failed.
+        dprintf(STDERR_FILENO, "%s -c failed: %s", shell_path, strerror(errno));
+        free(command_string);
+        _exit(127); // Exit child immediately
 
-        _exit(127); // Use _exit in child after fork
     } else {
-        // Parent process
-        close(error_pipe[1]);  // Close write end
-
-        // Read error output
+        // --- Parent Process ---
+        close(error_pipe[1]);
         char error_buffer[MAX_ERROR_LEN] = {0};
         ssize_t bytes_read = read(error_pipe[0], error_buffer, sizeof(error_buffer) - 1);
-        close(error_pipe[0]);  // Close read end
-
-        // Wait for child
+        close(error_pipe[0]);
         int status;
         waitpid(pid, &status, 0);
         ctx->last_exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-
-        // Store error if execvp failed (indicated by specific exit code and/or error message)
-        // Only store if exit code is non-zero AND error message exists
         if (ctx->last_exit_code != 0 && bytes_read > 0) {
-            error_buffer[bytes_read] = '\\0';  // Ensure null termination
-            // Avoid overwriting existing error from builtins etc. if not needed
             if (ctx->last_error) free(ctx->last_error);
+            error_buffer[bytes_read] = '\0';
             ctx->last_error = strdup(error_buffer);
+        } else {
+             if (ctx->last_error) { free(ctx->last_error); ctx->last_error = NULL; }
         }
-
-        // No need to free argv, Python wrapper owns it
-
         return ctx->last_exit_code;
     }
 }
@@ -150,7 +179,6 @@ int shell_execute_pipeline(ShellContext *ctx, char *const *const *pipeline_argv,
         if (!pipeline_argv[0] || !pipeline_argv[0][0]) return -1; // Invalid command
         return shell_execute(ctx, pipeline_argv[0]);
     }
-
 
     int pipes[num_commands - 1][2];
     pid_t pids[num_commands];
@@ -207,11 +235,26 @@ int shell_execute_pipeline(ShellContext *ctx, char *const *const *pipeline_argv,
                 close(pipes[j][1]);
             }
 
-            // Execute command using the provided argv for this stage
-            execvp(pipeline_argv[i][0], pipeline_argv[i]);
+            // Reconstruct command string for this pipeline stage
+            char *command_string_stage = reconstruct_command_string(pipeline_argv[i]);
+            if (!command_string_stage) {
+                 perror("Failed to reconstruct pipeline stage string"); // Write to stderr
+                 _exit(127);
+            }
 
-            // If execvp fails:
-            perror(pipeline_argv[i][0]); // Write error to stderr (which might be piped)
+            // Get user's shell
+            const char *shell_path = getenv("SHELL");
+            if (!shell_path || strlen(shell_path) == 0) {
+                shell_path = "/bin/bash";
+            }
+            char *shell_basename = basename((char *)shell_path);
+
+            // Execute this stage using shell -c
+            execlp(shell_path, shell_basename, "-c", command_string_stage, (char *)NULL);
+
+            // If execlp returns, it failed.
+            dprintf(STDERR_FILENO, "%s -c failed for pipeline stage: %s", shell_path, strerror(errno)); // Write error to stderr (may be piped)
+            free(command_string_stage);
             _exit(127);
         }
     }
@@ -236,7 +279,6 @@ int shell_execute_pipeline(ShellContext *ctx, char *const *const *pipeline_argv,
              status = -1; // Indicate error
         }
     }
-
 
     // Set context's last exit code based on the status of the last command
     // TODO: Pipeline error reporting needs improvement. We don't capture stderr here.

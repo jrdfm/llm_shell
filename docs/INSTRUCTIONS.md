@@ -60,7 +60,7 @@ This simulates the actual user installation process from built artifacts and hel
 python -m build
 
 # Uninstall any old version (if present)
-pip uninstall shell-llm -y
+python -m pip uninstall shell-llm -y
 
 # Install the newly built wheel (replace * with actual version/tags)
 pip install dist/shell_llm-*.whl

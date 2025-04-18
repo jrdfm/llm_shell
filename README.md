@@ -22,58 +22,65 @@ Set up your Google API key (see "Post-Installation Setup" below).
 ### Method 2: Install from Source (for Development)
 
 1.  **Clone the repository:**
-    ```bash
+```bash
     git clone https://github.com/jrdfm/shell-llm.git # Update URL if needed
-    cd shell-llm
-    ```
+cd shell-llm
+```
 
 2.  **Create and activate a virtual environment:**
-    ```bash
-    python -m venv venv
+```bash
+python -m venv venv
     source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-    ```
+```
 
 3.  **Install dependencies (including build/test tools):**
-    ```bash
+```bash
     pip install -r requirements.txt
     pip install build twine cibuildwheel pytest pytest-asyncio pytest-mock
-    ```
+```
 
 4.  **Build the C extension:**
-    ```bash
+```bash
     # Build the C extension module and place it in the source tree
     python -m build --wheel --outdir . --no-isolation
     # Or build and install into the venv (needed to run `shell-llm` command directly)
     # pip install . --force-reinstall
-    ```
+```
 
 5.  **Set up your Google API key** (see "Post-Installation Setup" below).
 
 ## Running the Shell
 
 1.  **Activate Virtual Environment** (if installed from source):
-    ```bash
+```bash
     source venv/bin/activate
-    ```
+```
 
 2.  **Run:**
-    ```bash
-    shell-llm
-    ```
+```bash
+shell-llm
+```
 
 ## Usage
 
 -   **Standard Shell Commands:** Most standard shell commands work as expected. Pipelines (`|`) are supported. **Note:** Redirection (`>`, `<`, `>>`, etc.) is **not** currently implemented by the shell wrapper; these characters will likely be treated as literal arguments by commands.
 -   **Natural Language Queries:** Start your query with `#`.
-    ```bash
+  ```bash
     # how do I find large files?
-    ```
+  ```
 -   **Verbosity Flags (for NL Queries):** Add `-v` or `-vv` after `#` for more detailed explanations of the generated command.
-    ```bash
+  ```bash
     # -v list files sorted by size
     # -vv copy files securely between servers
     ```
 -   **Exit:** Type `exit` or press `Ctrl+D`.
+
+### Known Limitations / TODO
+
+*   **Shell Aliases:** User-defined aliases (e.g., `alias ll='ls -l'`) are **not** recognized or expanded. The shell executes commands directly. (Common commands like `ls` and `grep` have `--color=auto` added automatically for visual consistency).
+*   **Redirection:** Input/output redirection (`>`, `<`, `>>`, `2>`) is **not** currently implemented.
+*   **Complex Shell Syntax:** Features like command substitution (`$(...)`), process substitution (`<()`), brace expansion (`{a,b}`), background tasks (`&`), shell functions, and advanced globbing are not supported as they rely on a full shell interpreter.
+*   **Environment Variable Completion:** Tab completion for environment variables currently uses the environment `shell-llm` started with (`os.environ`), not the potentially modified environment within the `core.Shell` context.
 
 ## Features
 

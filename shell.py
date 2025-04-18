@@ -135,7 +135,6 @@ class LLMShell:
                 return
             
             # --- Built-in Handling (before core execution) ---
-            # Handle 'cd' separately as it must affect the parent process
             if query.startswith('cd ') or query == 'cd':
                  try:
                      args = shlex.split(query) # Use shlex even for cd for consistency
@@ -150,16 +149,42 @@ class LLMShell:
                      error_msg = f"cd error: {e}"
                      exit_code = 1 # Indicate error
                  # Skip core execution for cd
+                 pass # Continue to error handling section
 
-            # --- Core Execution --- 
+            # --- Alias Simulation (before parsing) ---
+            # Add default color flags for common commands
+            # NOTE: This is a basic simulation, real alias handling is complex.
             else:
+                parts = query.split(None, 1) # Split command from args
+                command_word = parts[0] if parts else ''
+                original_args_str = parts[1] if len(parts) > 1 else ''
+                
+                commands_with_color = {'ls', 'grep', 'dir', 'vdir', 'diff'}
+                
+                if command_word in commands_with_color:
+                    # Check if --color is already present
+                    if '--color' not in query.split(): # Basic check
+                        query = f"{command_word} --color=auto {original_args_str}".strip()
+                        # print(f"Alias applied: {query}") # Debug
+
+                # --- Core Execution (Now using potentially modified query) ---
                 if '|' in query:
-                    # Handle Pipeline
                     command_description = "Pipeline"
                     commands_str = [cmd.strip() for cmd in query.split('|')]
-                    # Parse each stage using shlex
-                    pipeline_args = [shlex.split(cmd) for cmd in commands_str]
-                    # Filter out empty commands that might result from parsing (e.g., "echo hi | | wc")
+                    
+                    # Apply alias simulation to each part of the pipeline
+                    processed_cmds_str = []
+                    for cmd_str in commands_str:
+                        cmd_parts = cmd_str.split(None, 1)
+                        cmd_word = cmd_parts[0] if cmd_parts else ''
+                        cmd_args_str = cmd_parts[1] if len(cmd_parts) > 1 else ''
+                        if cmd_word in commands_with_color and '--color' not in cmd_str.split():
+                            processed_cmds_str.append(f"{cmd_word} --color=auto {cmd_args_str}".strip())
+                        else:
+                            processed_cmds_str.append(cmd_str)
+
+                    # Parse each processed stage using shlex
+                    pipeline_args = [shlex.split(cmd) for cmd in processed_cmds_str]
                     valid_pipeline_args = [args for args in pipeline_args if args]
                     if not valid_pipeline_args:
                          error_msg = "Invalid empty pipeline"
@@ -169,9 +194,9 @@ class LLMShell:
                 else:
                     # Handle Single Command
                     command_description = "Command"
-                    args = shlex.split(query)
-                    if not args: # Handle empty input after parsing
-                         return # Do nothing
+                    args = shlex.split(query) # Parse the (potentially modified) query
+                    if not args: 
+                         return 
                     result = self.core_shell.execute(args)
             
             # Process result from core shell execution (if not handled by built-in)
