@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <signal.h>
 #include "shell.h"
 
 #define MAX_ARGS 256
@@ -85,7 +86,10 @@ int shell_execute(ShellContext *ctx, char *const argv[]) {
         execvp(argv[0], argv);
 
         // If execvp returns, it failed.
-        dprintf(STDERR_FILENO, "%s: %s", argv[0], strerror(errno));
+        // Format a more complete error message with the full strerror text
+        char error_buf[MAX_ERROR_LEN];
+        snprintf(error_buf, sizeof(error_buf), "%s: %s", argv[0], strerror(errno));
+        write(STDERR_FILENO, error_buf, strlen(error_buf));
         _exit(127); // Exit child immediately
 
     } else {
@@ -108,6 +112,23 @@ int shell_execute(ShellContext *ctx, char *const argv[]) {
     }
 }
 
+// Helper function to clean up resources during pipeline setup failure
+static void cleanup_pipeline_resources(int num_commands, int pipes[][2], int pipes_to_close_idx, pid_t pids[], int pids_to_kill_idx) {
+    // Close pipes created up to the error point
+    for (int i = 0; i <= pipes_to_close_idx; i++) {
+        close(pipes[i][0]);
+        close(pipes[i][1]);
+    }
+
+    // Terminate and wait for children forked before the error
+    for (int i = 0; i <= pids_to_kill_idx; i++) {
+        if (pids[i] > 0) {
+            kill(pids[i], SIGTERM); // Send termination signal
+            waitpid(pids[i], NULL, 0); // Wait for termination
+        }
+    }
+}
+
 // Execute a pipeline of commands, taking pre-parsed arguments for each command
 int shell_execute_pipeline(ShellContext *ctx, char *const *const *pipeline_argv, int num_commands) {
     if (num_commands <= 0) return 0;
@@ -120,15 +141,28 @@ int shell_execute_pipeline(ShellContext *ctx, char *const *const *pipeline_argv,
     }
 
     int pipes[num_commands - 1][2];
+    // Initialize pipe fds to -1 to track which are open
+    for (int i = 0; i < num_commands - 1; i++) {
+        pipes[i][0] = -1;
+        pipes[i][1] = -1;
+    }
+
     pid_t pids[num_commands];
+    // Initialize pids to 0 or -1 (0 = not forked, -1 = error/invalid)
+    for (int i = 0; i < num_commands; i++) {
+        pids[i] = 0;
+    }
+
     int status = 0; // Hold status of last command
+    int setup_error = 0; // Flag to indicate setup failed
 
     // Create pipes
     for (int i = 0; i < num_commands - 1; i++) {
         if (pipe(pipes[i]) == -1) {
             perror("pipe");
-            // TODO: Cleanup any already created pipes/processes
-            return -1;
+            // Cleanup pipes created so far (up to i-1)
+            cleanup_pipeline_resources(num_commands, pipes, i - 1, pids, -1); // No pids to kill yet
+            return -1; // Return error after cleanup
         }
     }
 
@@ -136,18 +170,18 @@ int shell_execute_pipeline(ShellContext *ctx, char *const *const *pipeline_argv,
     for (int i = 0; i < num_commands; i++) {
          // Check if the command itself is valid before forking
         if (!pipeline_argv[i] || !pipeline_argv[i][0]) {
-             fprintf(stderr, "Error: Invalid empty command in pipeline stage %d\\n", i);
-             // TODO: Proper cleanup of pipes/processes
-             // For now, just mark as error and continue cleanup below
-             pids[i] = -1; // Mark as invalid pid
-             continue;
+             fprintf(stderr, "Error: Invalid empty command in pipeline stage %d\n", i);
+             pids[i] = -1; // Mark as invalid
+             setup_error = 1; // Mark that setup failed
+             break; // Stop creating processes
         }
 
         pids[i] = fork();
         if (pids[i] < 0) {
             perror("fork");
-            // TODO: Cleanup
-            return -1; // Or try to kill already started children? Complex.
+            // Cleanup pipes and already forked processes (up to i-1)
+            cleanup_pipeline_resources(num_commands, pipes, num_commands - 2, pids, i - 1);
+            return -1; // Return error after cleanup
         }
 
         if (pids[i] == 0) {
@@ -169,44 +203,61 @@ int shell_execute_pipeline(ShellContext *ctx, char *const *const *pipeline_argv,
             }
 
             // Close *all* pipe file descriptors in the child
+            // Only close valid pipe fds
             for (int j = 0; j < num_commands - 1; j++) {
-                close(pipes[j][0]);
-                close(pipes[j][1]);
+                if (pipes[j][0] != -1) close(pipes[j][0]);
+                if (pipes[j][1] != -1) close(pipes[j][1]);
             }
 
             // === Execute directly using execvp ===
             execvp(pipeline_argv[i][0], pipeline_argv[i]);
 
             // If execvp returns, it failed.
-            // Note: Error message goes to stderr, which might be the pipe to the next stage
-            perror(pipeline_argv[i][0]); 
+            // Use the same more detailed error format as in shell_execute
+            char error_buf[MAX_ERROR_LEN];
+            snprintf(error_buf, sizeof(error_buf), "%s: %s", pipeline_argv[i][0], strerror(errno));
+            write(STDERR_FILENO, error_buf, strlen(error_buf));
             _exit(127);
         }
     }
 
     // Parent: close all pipe file descriptors
     for (int i = 0; i < num_commands - 1; i++) {
-        close(pipes[i][0]);
-        close(pipes[i][1]);
+        if (pipes[i][0] != -1) close(pipes[i][0]);
+        if (pipes[i][1] != -1) close(pipes[i][1]);
+    }
+
+    // If setup failed partway, clean up processes that were started
+    if (setup_error) {
+        // Wait for any processes that *were* successfully forked before the error
+        for(int i = 0; i < num_commands; ++i) {
+            if (pids[i] > 0) {
+                 waitpid(pids[i], NULL, 0); // Wait for them to finish (or be killed)
+            }
+        }
+        if (ctx->last_error) free(ctx->last_error);
+        ctx->last_error = strdup("Invalid command in pipeline");
+        ctx->last_exit_code = -1; // Indicate setup error
+        return ctx->last_exit_code;
     }
 
     // Parent: Wait for all child processes
     // Store the status of the *last* command in the pipeline
     for (int i = 0; i < num_commands; i++) {
-        if (pids[i] > 0) { // Only wait for valid pids
+        if (pids[i] > 0) { // Only wait for valid pids (should be all if no setup_error)
             int child_status;
             waitpid(pids[i], &child_status, 0);
             if (i == num_commands - 1) { // Is this the last command?
                 status = child_status;
             }
-        } else if (i == num_commands - 1) {
-            // Handle case where the last command itself was invalid before fork
-             status = -1; // Indicate error
         }
+        // Note: The case where the last command was invalid (pids[i] == -1)
+        // is now handled by the setup_error logic above.
     }
 
     // Set context's last exit code based on the status of the last command
-    // TODO: Pipeline error reporting needs improvement. We don't capture stderr here.
+    // Note: Capturing specific stderr for each failed command in a pipeline
+    // would require additional plumbing (e.g., separate error pipes per command).
     if (ctx->last_error) {
         free(ctx->last_error);
         ctx->last_error = NULL;
@@ -215,12 +266,19 @@ int shell_execute_pipeline(ShellContext *ctx, char *const *const *pipeline_argv,
     // Check status from the last command
     if (WIFEXITED(status)) {
         ctx->last_exit_code = WEXITSTATUS(status);
-    } else if (status == -1) { // Our custom error marker
-         ctx->last_exit_code = -1; // Or some other error code
-         ctx->last_error = strdup("Invalid command in pipeline");
-    }
-     else {
+        // If the last command exited with an error, store a generic message
+        if (ctx->last_exit_code != 0) {
+             ctx->last_error = strdup("Pipeline command failed");
+        }
+    } else if (status == -1) { // Our custom error marker from setup_error
+         // This case is already handled by the setup_error block earlier
+         // where last_error is set to "Invalid command in pipeline"
+         // and last_exit_code is set to -1.
+         // We just need to ensure we don't overwrite it here.
+    } else {
         ctx->last_exit_code = -1; // Indicate non-exit termination (signal?)
+        // Store a message indicating abnormal termination
+        ctx->last_error = strdup("Pipeline command terminated abnormally");
     }
 
     // No need to free pipeline_argv, Python wrapper owns it
